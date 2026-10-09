@@ -1,6 +1,7 @@
-# Builds and self-tests all three apps on every push. Pushing a tag like v1.0.0 also publishes
-# a GitHub Release with the Windows .exe, macOS .zip and Linux .AppImage attached, using the
-# matching section of CHANGELOG.md as release notes.
+# Builds and self-tests the apps on every push. Pushing a tag like v1.0.0 publishes a GitHub
+# Release with the Windows app (one .exe) and its SHA-256 checksum, using the matching section
+# of CHANGELOG.md as release notes. macOS and Linux are work in progress: they are built and
+# tested here to keep the code healthy, but not attached to releases yet.
 name: Build and release
 
 on:
@@ -18,6 +19,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION).Trim()
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match VERSION $v" }
       - name: Build
         shell: pwsh
         run: ./windows/build.ps1
@@ -41,52 +48,58 @@ jobs:
         run: |
           $v = (Get-Content VERSION).Trim()
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item windows/bin/DSLRWebcamStudio.exe "dist/DSLR_Webcam_Studio-$v-Windows-x64.exe"
+          $name = "DSLR_Webcam_Studio-$v-Windows-x64.exe"
+          Copy-Item windows/bin/DSLRWebcamStudio.exe "dist/$name"
+          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Set-Content -Encoding ascii "dist/SHA256SUMS.txt"
+          Get-Content dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: dist/*
 
+  # Work in progress: built and self-tested, not released yet.
   macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - name: Build, self-test and package
         run: bash macos/build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: macos
-          path: macos/build/*.zip
 
   linux:
-    runs-on: ubuntu-22.04   # older glibc = AppImage runs on more distros
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libusb-1.0-0-dev librsvg2-dev file libfuse2
-      - name: Build, self-test and package
-        run: bash linux/package-appimage.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux
-          path: linux/*.AppImage
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev libusb-1.0-0-dev
+      - name: Build and self-test
+        run: make -C linux test
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos, linux]
+    needs: [windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          name: windows
           path: dist
-          merge-multiple: true
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
-          gh release create "$GITHUB_REF_NAME" dist/* --title "DSLR Webcam Studio $GITHUB_REF_NAME" --notes-file notes.md
+          cat >> notes.md <<'EOF'
+
+          ### Download
+          **Windows 10/11 (64-bit):** download `DSLR_Webcam_Studio-*-Windows-x64.exe` below and run it. It's a
+          single file with nothing to install. The virtual webcam needs Windows 11: click **Install virtual camera**
+          in the app once. `SHA256SUMS.txt` lets you verify the download.
+
+          macOS and Linux versions are in progress and will be released later.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --title "DSLR Webcam Studio $GITHUB_REF_NAME" --notes-file notes.md --latest

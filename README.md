@@ -4,7 +4,7 @@
 
 <p align="center">
   Use your Canon EOS camera as a webcam: free, open source, no Canon software needed.<br>
-  Windows · macOS · Linux
+  Windows 10/11 · macOS and Linux coming later
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 ## Features
 
 - **Works as a webcam** in OBS, Streamlabs, Zoom, Teams, Discord, browsers and more: it adds a camera called
-  **"DSLR Webcam Studio"** (Windows 11 and Linux; see [Use it as a webcam](#use-it-as-a-webcam)).
+  **"DSLR Webcam Studio"** (Windows 11; see [Use it as a webcam](#use-it-as-a-webcam)).
 - **Live preview** from a Canon EOS camera over USB. The app talks to the camera directly; no Canon
   drivers, DLLs or subscriptions.
 - **Streaming Video Output Resolution**: 640×360, 1280×720 or 1920×1080.
@@ -30,13 +30,13 @@
 
 ## Download
 
-Get the file for your system from the [latest release](https://github.com/akshay4/dslr-webcam-studio/releases/latest):
+**Windows 10/11 (64-bit):** download `DSLR_Webcam_Studio-<version>-Windows-x64.exe` from the
+[latest release](https://github.com/akshay4/dslr-webcam-studio/releases/latest) and run it. It's one ~280 KB file
+with nothing to install; put it anywhere you like. If SmartScreen appears (the app isn't code-signed), click
+**More info → Run anyway**. Each release also has `SHA256SUMS.txt` for verifying the download.
 
-| System | File | First launch |
-|---|---|---|
-| Windows 10/11 (64-bit) | `DSLR_Webcam_Studio-…-Windows-x64.exe` | Just run it (single ~280 KB file). If SmartScreen appears: **More info → Run anyway**. |
-| macOS 12+ (Apple silicon & Intel) | `DSLR_Webcam_Studio-…-macOS.zip` | Unzip, move to Applications, then **right-click → Open** the first time (the app is not notarized). |
-| Linux x86-64 | `DSLR_Webcam_Studio-…-x86_64.AppImage` | `chmod +x` it and run. For USB access without root, install [the udev rule](linux/60-dslr-webcam-studio.rules) once. |
+**macOS and Linux:** work in progress, coming in a later release. The source is in [`macos/`](macos) and
+[`linux/`](linux) and builds in CI, but it hasn't been tested with a camera yet.
 
 ## Quick start
 
@@ -53,25 +53,14 @@ Streamlabs, Zoom, Teams, Discord, Chrome/Edge or the Windows Camera app. The cam
 resolution, framerate, flips and image settings. Remove it with `DSLRWebcamStudio.exe --uninstall-vcam`.
 (Windows 10 lacks the virtual-camera API, so the app shows preview only there.)
 
-**Linux:** install v4l2loopback once, then start the app and pick "DSLR Webcam Studio" in your video app:
-
-```
-sudo apt install v4l2loopback-dkms          # Fedora: sudo dnf install v4l2loopback
-sudo modprobe v4l2loopback exclusive_caps=1 card_label="DSLR Webcam Studio"
-# keep it after reboot:
-echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
-echo 'options v4l2loopback exclusive_caps=1 card_label="DSLR Webcam Studio"' | sudo tee /etc/modprobe.d/v4l2loopback.conf
-```
-
-**macOS:** apps can only add cameras through a Camera Extension signed with a paid Apple Developer ID, so the macOS
-build currently offers preview only. A signed build with the virtual camera is planned.
+**macOS / Linux (in progress):** Linux will use v4l2loopback (the code is in `linux/src/vcam.c`). On macOS a virtual
+camera needs a Camera Extension signed with a paid Apple Developer ID.
 
 **For a clean picture:** in a dim room the camera's Auto ISO climbs high and the image gets grainy. Set the dial to
 **M**, choose **ISO 400–800** and **shutter 1/30–1/60** in the app, open the aperture as wide as your lens allows,
 and keep **Noise reduction** on Medium. More light on your face helps most of all.
 
-**If it doesn't connect:** close Canon EOS Utility / EOS Webcam Utility (they hold the camera). On Linux, unmount
-the camera in your file manager if the desktop auto-mounted it. Then press **Diagnostics** and include the report
+**If it doesn't connect:** close Canon EOS Utility / EOS Webcam Utility (they hold the camera), then press **Diagnostics** and include the report
 when you [open an issue](https://github.com/akshay4/dslr-webcam-studio/issues).
 
 ## Supported cameras
@@ -79,9 +68,9 @@ when you [open an issue](https://github.com/akshay4/dslr-webcam-studio/issues).
 Canon EOS DSLR and mirrorless bodies that support live view over USB (roughly 2009 onward) use the same protocol
 and should work. Tested so far:
 
-| Camera | Windows | macOS | Linux |
-|---|---|---|---|
-| EOS 700D / Rebel T5i / Kiss X7i | ✅ 960×640 live view, ~17 fps | ⏳ | ⏳ |
+| Camera | Result on Windows |
+|---|---|
+| EOS 700D / Rebel T5i / Kiss X7i | ✅ 960×640 live view, ~17 fps, ISO/shutter control, virtual webcam |
 
 Tested your camera? Please open an issue with your Diagnostics report and this table will be updated.
 
@@ -102,8 +91,8 @@ opcodes used by [libgphoto2](https://github.com/gphoto/libgphoto2). Each platfor
 | Platform | Language / UI | Camera transport |
 |---|---|---|
 | Windows | C# (.NET Framework 4.8, built into Windows) + WinForms | Windows Portable Devices API, raw PTP via the MTP-extension commands of the built-in `WUDFWpdMtp` driver |
-| macOS | Swift + SwiftUI | Apple ImageCaptureCore `requestSendPTPCommand` |
-| Linux | C + GTK 3 | libusb, PTP bulk transfers (USB still-image class) |
+| macOS (in progress) | Swift + SwiftUI | Apple ImageCaptureCore `requestSendPTPCommand` |
+| Linux (in progress) | C + GTK 3 | libusb, PTP bulk transfers (USB still-image class) |
 
 **Holding the framerate.** The camera delivers frames at its own pace (about 17 fps on a 700D in photo live view) and
 that pace drifts. Like a real webcam, the output runs on a fixed timeline at exactly the target rate. Each tick sends
@@ -158,9 +147,13 @@ assets/          icon (SVG + PNG + ICO)    tools/MakeIcons.cs renders them
 
 ## Releasing a new version
 
-1. Update `VERSION` and add a section to [`CHANGELOG.md`](CHANGELOG.md).
+Versions follow [Semantic Versioning](https://semver.org/) (`MAJOR.MINOR.PATCH`); the single source of truth is
+[`VERSION`](VERSION), which the app's title bar, file version and release name all come from.
+
+1. Update `VERSION` and add a `## [x.y.z] - date` section to [`CHANGELOG.md`](CHANGELOG.md).
 2. Commit, then tag and push: `git tag v1.0.1 && git push origin main v1.0.1`.
-3. GitHub Actions builds all three apps, runs their self-tests and publishes the release with the downloads attached.
+3. GitHub Actions checks that the tag matches `VERSION`, builds the app, runs the self-tests (app + virtual camera)
+   and publishes a GitHub Release with the exe, `SHA256SUMS.txt` and the changelog section as notes.
 
 ## Support the project
 

@@ -5,10 +5,10 @@ the current version is in [`VERSION`](VERSION).
 
 ## [1.0.0] - 2026-10-09
 
-First public release for Windows, macOS and Linux.
+First public release, for Windows 10/11 (64-bit), as a single portable exe.
 
 - **Virtual webcam "DSLR Webcam Studio"** for OBS, Streamlabs, Zoom, Teams, browsers etc.: Windows 11 (own Media
-  Foundation media source registered with Windows' virtual-camera API, one-time install) and Linux (v4l2loopback).
+  Foundation media source registered with Windows' virtual-camera API, one-time install).
 - Live preview from Canon EOS cameras over USB. No Canon software or DLLs: the apps speak Canon's
   PTP live-view protocol directly.
 - **Streaming Video Output Resolution**: 640x360, 1280x720, 1920x1080.
@@ -22,6 +22,5 @@ First public release for Windows, macOS and Linux.
 - Snapshot to PNG, Diagnostics report, automatic reconnect when the camera is unplugged or sleeps.
 - Settings saved to `config.ini`, shared format across platforms.
 
-Platform status: the Windows build is tested end to end on a Canon EOS 700D. The macOS and Linux
-builds pass their self-tests in CI; camera testing on those platforms is in progress (please send a
-Diagnostics report if your camera works or doesn't).
+Tested end to end on a Canon EOS 700D. Other Canon EOS models should work. Please send a Diagnostics
+report either way. macOS and Linux versions are in progress and will be released later.

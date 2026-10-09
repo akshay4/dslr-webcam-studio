@@ -52,7 +52,9 @@ int main(int argc, char **argv) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     MFStartup(MF_VERSION, MFSTARTUP_FULL);
 
-    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWS_SECTION_SIZE, DWS_SECTION_NAME_LOCAL);
+    // Same order as the media source: Global\ when this process may create it (elevated), else Local\.
+    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWS_SECTION_SIZE, DWS_SECTION_NAME);
+    if (!sec) sec = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, DWS_SECTION_SIZE, DWS_SECTION_NAME_LOCAL);
     BYTE *view = (BYTE *)MapViewOfFile(sec, FILE_MAP_ALL_ACCESS, 0, 0, DWS_SECTION_SIZE);
     g_hdr = (DwsSharedHeader *)view;
     g_px = (UINT32 *)(view + DWS_HEADER_SIZE);
