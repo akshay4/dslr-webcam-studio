@@ -1,0 +1,17 @@
+# Windows build output
+windows/bin/
+windows/obj/
+
+# macOS build output
+macos/.build/
+macos/build/
+macos/.swiftpm/
+
+# Linux build output
+linux/dslr-webcam-studio
+linux/AppDir/
+linux/.tools/
+linux/*.AppImage
+
+# Rendered icons are committed; the generator's exe is not
+tools/*.exe

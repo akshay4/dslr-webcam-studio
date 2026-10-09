@@ -1,0 +1,4 @@
+# Lets the logged-in user talk to Canon cameras over USB without root.
+# Install: sudo cp 60-dslr-webcam-studio.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+# then unplug and replug the camera.
+SUBSYSTEM=="usb", ATTR{idVendor}=="04a9", MODE="0660", TAG+="uaccess"

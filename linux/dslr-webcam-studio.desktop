@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DSLR Webcam Studio
+Comment=Use a Canon EOS camera as a webcam with live preview
+Exec=dslr-webcam-studio
+Icon=dslr-webcam-studio
+Categories=AudioVideo;Video;Photography;
+Terminal=false
