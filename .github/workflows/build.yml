@@ -51,7 +51,8 @@ jobs:
           $name = "DSLR_Webcam_Studio-$v-Windows-x64.exe"
           Copy-Item windows/bin/DSLRWebcamStudio.exe "dist/$name"
           $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Set-Content -Encoding ascii "dist/SHA256SUMS.txt"
+          # LF line ending so "sha256sum -c SHA256SUMS.txt" works everywhere
+          [IO.File]::WriteAllText("dist/SHA256SUMS.txt", "$hash  $name`n")
           Get-Content dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
