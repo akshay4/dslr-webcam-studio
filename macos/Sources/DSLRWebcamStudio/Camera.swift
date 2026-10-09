@@ -25,9 +25,6 @@ final class CameraBrowser: NSObject, ICDeviceBrowserDelegate {
             self.browser.delegate = self
             self.browser.browsedDeviceTypeMask = ICDeviceTypeMask(
                 rawValue: ICDeviceTypeMask.camera.rawValue | ICDeviceLocationTypeMask.local.rawValue)!
-            if #available(macOS 10.15, *) {
-                self.browser.requestControlAuthorization { _ in }
-            }
             self.browser.start()
         }
     }

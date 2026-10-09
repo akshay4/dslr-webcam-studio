@@ -181,7 +181,10 @@ final class Enhancer {
     private static let nrThresh = [1, 6, 9, 12]
     private static let sharpAmount = [0, 128, 256, 420]
 
-    private static func luma(_ p: UInt32) -> Int { Int(2 * ((p >> 16) & 255) + 5 * ((p >> 8) & 255) + (p & 255)) >> 3 }
+    private static func luma(_ p: UInt32) -> Int {
+        let r = Int((p >> 16) & 255), g = Int((p >> 8) & 255), b = Int(p & 255)
+        return (2 * r + 5 * g + b) >> 3
+    }
     private static func ch(_ p: UInt32, _ s: UInt32) -> Int { Int((p >> s) & 255) }
 
     // Returns src when both are off, otherwise a new frame.
