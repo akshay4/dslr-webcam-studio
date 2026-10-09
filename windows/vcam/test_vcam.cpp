@@ -1,3 +1,4 @@
+// Run it while DSLR Webcam Studio is closed: a running app writes into the same shared section.
 // Exercises the virtual camera media source in-process through Windows' own IMFSourceReader:
 // activation, media types, start, paced samples, frame contents (RGB32 + NV12) and placeholder.
 // Build: zig cc -target x86_64-windows-gnu -x c++ test_vcam.cpp -lmfplat -lmfreadwrite -lmfuuid -lole32
@@ -45,6 +46,19 @@ static bool read_one(IMFSourceReader *r, BYTE *out, DWORD cap, DWORD *len, LONGL
     b->Release();
     s->Release();
     return true;
+}
+
+// Index of the native media type with this subtype and size (-1 if none); the order depends on the preferred format.
+static int find_type(IMFSourceReader *r, const GUID &sub, UINT32 w, UINT32 h) {
+    for (DWORD i = 0;; i++) {
+        IMFMediaType *t = nullptr;
+        if (FAILED(r->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, &t))) return -1;
+        GUID s; UINT32 tw = 0, th = 0;
+        t->GetGUID(MF_MT_SUBTYPE, &s);
+        MFGetAttributeSize(t, MF_MT_FRAME_SIZE, &tw, &th);
+        t->Release();
+        if (s == sub && tw == w && th == h) return (int)i;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -103,7 +117,7 @@ int main(int argc, char **argv) {
 
     // RGB32 1280x720: frames from the app come through unchanged.
     IMFMediaType *rgb = nullptr;
-    reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 1, &rgb); // preferred size, RGB32
+    reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, find_type(reader, MFVideoFormat_RGB32, 1280, 720), &rgb);
     check(SUCCEEDED(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, rgb)), "select RGB32 1280x720");
     rgb->Release();
     write_frame(1280, 720, 0xFF336699);
@@ -124,7 +138,7 @@ int main(int argc, char **argv) {
 
     // NV12 at 640x360: white -> Y=235, U=V=128 (BT.601 limited range).
     IMFMediaType *nv = nullptr;
-    reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 4, &nv);
+    reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, find_type(reader, MFVideoFormat_NV12, 640, 360), &nv);
     UINT32 w = 0, h = 0;
     MFGetAttributeSize(nv, MF_MT_FRAME_SIZE, &w, &h);
     check(SUCCEEDED(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, nv)), "select NV12");
