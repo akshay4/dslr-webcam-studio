@@ -12,6 +12,12 @@ namespace DslrWebcamStudio
 
     public sealed class StreamSettings
     {
+        // config.ini keys ([Global] section; the same keys as EOS Webcam Utility for size and fps).
+        const string Section = "Global";
+        const string KeyWidth = "StreamWidth", KeyHeight = "StreamHeight", KeyFps = "StreamFps", KeyFit = "FitMode";
+        const string KeyFlipH = "FlipHorizontal", KeyFlipV = "FlipVertical", KeyNoise = "NoiseReduction", KeySharp = "Sharpness";
+        const string FitValue = "fit", FillValue = "fill", On = "1", Off = "0";
+
         public static readonly int[] Resolutions = { 360, 720, 1080 };
         // Canon DSLR live view tops out around 17-30 fps over USB 2.0, so 60 would only repeat frames.
         public static readonly int[] FpsChoices = { 15, 24, 25, 30 };
@@ -19,7 +25,7 @@ namespace DslrWebcamStudio
         public const int DefaultResolution = 720;
         public const int DefaultFps = 30;
 
-        public static readonly string[] Levels = { "Off", "Low", "Medium", "High" };
+        public static readonly string[] Levels = Strings.Levels;
         public const int DefaultNoiseReduction = 2, DefaultSharpness = 1;
 
         public readonly int Width;
@@ -129,36 +135,36 @@ namespace DslrWebcamStudio
             get
             {
                 return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                                    "DSLR Webcam Studio", "config.ini");
+                                    Strings.AppName, "config.ini");
             }
         }
 
         // Missing or invalid values fall back to their defaults.
         public static StreamSettings Load(string path)
         {
-            var g = Ini.Read(path, "Global");
-            int w = GetInt(g, "StreamWidth", 0), h = GetInt(g, "StreamHeight", 0);
+            var g = Ini.Read(path, Section);
+            int w = GetInt(g, KeyWidth, 0), h = GetInt(g, KeyHeight, 0);
             if (!IsAllowedSize(w, h)) ResolutionToSize(DefaultResolution, out w, out h);
-            int fps = GetInt(g, "StreamFps", DefaultFps);
+            int fps = GetInt(g, KeyFps, DefaultFps);
             if (Array.IndexOf(FpsChoices, fps) < 0) fps = DefaultFps;
             string fitText;
             FitMode fit = FitMode.Fit;
-            if (g.TryGetValue("FitMode", out fitText) && fitText.Trim().ToLowerInvariant() == "fill") fit = FitMode.Fill;
-            return new StreamSettings(w, h, fps, fit, GetInt(g, "FlipHorizontal", 0) == 1, GetInt(g, "FlipVertical", 0) == 1,
-                                      GetInt(g, "NoiseReduction", DefaultNoiseReduction), GetInt(g, "Sharpness", DefaultSharpness));
+            if (g.TryGetValue(KeyFit, out fitText) && fitText.Trim().ToLowerInvariant() == FillValue) fit = FitMode.Fill;
+            return new StreamSettings(w, h, fps, fit, GetInt(g, KeyFlipH, 0) == 1, GetInt(g, KeyFlipV, 0) == 1,
+                                      GetInt(g, KeyNoise, DefaultNoiseReduction), GetInt(g, KeySharp, DefaultSharpness));
         }
 
         public void Save(string path)
         {
-            Ini.Write(path, "Global", new Dictionary<string, string> {
-                { "StreamWidth", Width.ToString() },
-                { "StreamHeight", Height.ToString() },
-                { "StreamFps", Fps.ToString() },
-                { "FitMode", Fit == FitMode.Fill ? "fill" : "fit" },
-                { "FlipHorizontal", FlipHorizontal ? "1" : "0" },
-                { "FlipVertical", FlipVertical ? "1" : "0" },
-                { "NoiseReduction", NoiseReduction.ToString() },
-                { "Sharpness", Sharpness.ToString() },
+            Ini.Write(path, Section, new Dictionary<string, string> {
+                { KeyWidth, Width.ToString() },
+                { KeyHeight, Height.ToString() },
+                { KeyFps, Fps.ToString() },
+                { KeyFit, Fit == FitMode.Fill ? FillValue : FitValue },
+                { KeyFlipH, FlipHorizontal ? On : Off },
+                { KeyFlipV, FlipVertical ? On : Off },
+                { KeyNoise, NoiseReduction.ToString() },
+                { KeySharp, Sharpness.ToString() },
             });
         }
 

@@ -25,6 +25,11 @@ namespace DslrWebcamStudio
 
     public sealed class MtpDevice : IDisposable
     {
+        // Largest data phase accepted from the camera; live-view frames are ~300 KB. Guards against
+        // a faulty or malicious device making the app allocate huge buffers.
+        const ulong MaxTransferBytes = 64UL * 1024 * 1024;
+        const uint DefaultChunkBytes = 256 * 1024;
+
         IPortableDevice dev;
         public readonly WpdDeviceInfo Info;
 
@@ -163,9 +168,14 @@ namespace DslrWebcamStudio
             }
             finally { Marshal.ReleaseComObject(res); }
 
-            if (optimal == 0) optimal = 256 * 1024;
+            if (optimal == 0) optimal = DefaultChunkBytes;
+            if (total > MaxTransferBytes)
+            {
+                EndTransfer(ctx);
+                throw new InvalidDataException(string.Format(Strings.TransferTooLarge, total));
+            }
             PtpResponse resp = null;
-            var ms = new MemoryStream(total > 0 && total < int.MaxValue ? (int)total : 0);
+            var ms = new MemoryStream((int)total);
             try
             {
                 while ((ulong)ms.Length < total)
@@ -233,6 +243,13 @@ namespace DslrWebcamStudio
         }
 
         // ---- helpers -----------------------------------------------------
+
+        void EndTransfer(string ctx)
+        {
+            var ep = Command(Keys.CmdEndDataTransfer);
+            var k = Keys.TransferContext; ep.SetStringValue(ref k, ctx);
+            Marshal.ReleaseComObject(Send(ep));
+        }
 
         static IPortableDeviceValues NewValues() { return (IPortableDeviceValues)new PortableDeviceValuesClass(); }
 

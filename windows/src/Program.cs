@@ -29,8 +29,8 @@ namespace DslrWebcamStudio
                 Console.WriteLine(path);
                 return 0;
             }
-            if (args.Length >= 1 && args[0] == "--install-vcam") return VirtualCamera.Install();
-            if (args.Length >= 1 && args[0] == "--uninstall-vcam") return VirtualCamera.Uninstall();
+            if (args.Length >= 1 && args[0] == VirtualCamera.InstallArg) return VirtualCamera.Install();
+            if (args.Length >= 1 && args[0] == VirtualCamera.UninstallArg) return VirtualCamera.Uninstall();
             if (args.Length >= 2 && args[0] == "--selftest")
                 return SelfTest.Run(args[1], args.Length >= 3 && args[2] == "camera");
 
@@ -181,6 +181,13 @@ namespace DslrWebcamStudio
                 Check(props.Count == 1 && props[0xD103] == 0x60 && CameraValues.IsoName(0x60) == "800", "event parse: ISO 800");
             }
 
+            // Untrusted camera data: truncated or lying length fields must fail cleanly, not overrun.
+            Check(ThrowsData(() => PtpDeviceInfo.Parse(new byte[] { 0x64, 0, 6, 0 })), "malformed device info rejected (truncated)");
+            var lying = new byte[16];
+            BitConverter.GetBytes(0x7FFFFFFFu).CopyTo(lying, 8 + 1 + 2); // huge operation count
+            Check(ThrowsData(() => PtpDeviceInfo.Parse(lying)), "malformed device info rejected (huge count)");
+            Check(CanonLiveView.ExtractJpeg(new byte[] { 0xFF, 0xFF, 0xFF, 0x7F, 1, 0, 0, 0 }) == null, "viewfinder block with bogus length ignored");
+
             var jpeg = new byte[] { 0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9 };
             var block = new List<byte>();
             block.AddRange(BitConverter.GetBytes(8 + 4)); block.AddRange(BitConverter.GetBytes(5)); block.AddRange(new byte[4]);
@@ -249,6 +256,8 @@ namespace DslrWebcamStudio
             double m = s / n;
             return Math.Sqrt(Math.Max(0, s2 / n - m * m));
         }
+
+        static bool ThrowsData(Action a) { try { a(); return false; } catch (InvalidDataException) { return true; } }
 
         static bool Throws(Action a) { try { a(); return false; } catch (ArgumentException) { return true; } }
 

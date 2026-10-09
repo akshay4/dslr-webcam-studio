@@ -116,7 +116,9 @@ camera frame for the next one. Processing time therefore never shifts send times
 
 **Virtual camera.** On Windows 11 the app registers a camera with Windows' own virtual-camera API
 (`MFCreateVirtualCamera`). The camera is a small Media Foundation media source (`windows/vcam/vcam.cpp`, a 180 KB DLL
-embedded in the exe) that Windows' Camera Frame Server loads whenever an app opens the camera. Frame Server then
+embedded in the exe) that Windows' Camera Frame Server loads whenever an app opens the camera. The one-time install
+copies it to `C:Program FilesDSLR Webcam Studio` (writable by administrators only, since a Windows service loads it);
+the shared frame buffer is accessible only to the logged-on user and the camera service. Frame Server then
 shares it with every app at once and converts formats as needed (NV12, YUY2, RGB). The app hands each output frame to
 the media source through a shared-memory section with a sequence lock. When the app isn't sending, the camera
 shows a dark placeholder. On Linux the app writes YUYV frames to a v4l2loopback device.

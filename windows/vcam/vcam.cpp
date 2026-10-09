@@ -57,6 +57,8 @@ typedef HRESULT(WINAPI *PFN_MFCreateVirtualCamera)(int type, int lifetime, int a
                                                     LPCWSTR sourceId, const GUID *categories, ULONG categoryCount,
                                                     IDwsMFVirtualCamera **camera);
 
+struct Format { UINT32 w, h, fps; };
+
 static HMODULE g_module;
 static volatile LONG g_objects;
 
@@ -75,6 +77,24 @@ template <class T> static void SafeRelease(T *&p) { if (p) { p->Release(); p = n
 
 #define KS_NOT_FOUND HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND)
 
+// Shared section access: SYSTEM, LocalService (Frame Server) and the logged-on interactive user.
+// No low-integrity label, so sandboxed processes can't read or inject frames.
+static const wchar_t kSectionSddl[] = L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;IU)";
+static const ULONGLONG kStaleFrameMs = 2000;          // app stopped sending -> placeholder
+static const UINT32 kPlaceholderBackground = 0xFF1E1F24;
+static const UINT32 kPlaceholderIcon = 0xFF5A5F6E;
+static const UINT32 kOpaqueBlack = 0xFF000000;
+static const Format kSizes[] = {{1920, 1080, 0}, {1280, 720, 0}, {640, 360, 0}};
+static const UINT32 kDefaultFps = 30, kMinFps = 5, kMaxFps = 60;
+static const wchar_t kPrefsPath[] = L"%ProgramData%\\DSLR Webcam Studio\\vcam.ini";
+
+// True for the sizes this camera offers (the only ones RequestSample will produce).
+static bool IsOfferedSize(UINT32 w, UINT32 h) {
+    for (const Format &f : kSizes)
+        if (f.w == w && f.h == h) return true;
+    return false;
+}
+
 // ---- shared frame reader ---------------------------------------------------------------------
 
 class FrameReader {
@@ -91,8 +111,7 @@ public:
     void Open() {
         if (section_) return;
         SECURITY_ATTRIBUTES sa = {sizeof sa, nullptr, FALSE};
-        // Everyone and logged-on users may read/write; low-integrity label so any app can write.
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;WD)(A;;GA;;;AU)S:(ML;;NW;;;LW)", SDDL_REVISION_1,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(kSectionSddl, SDDL_REVISION_1,
                                                              &sa.lpSecurityDescriptor, nullptr);
         section_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, 0, DWS_SECTION_SIZE, DWS_SECTION_NAME);
         if (sa.lpSecurityDescriptor) LocalFree(sa.lpSecurityDescriptor);
@@ -118,7 +137,7 @@ private:
         if (!view_) return false;
         auto *hd = (volatile DwsSharedHeader *)view_;
         if (hd->magic != DWS_MAGIC || hd->version != DWS_VERSION) return false;
-        if (GetTickCount64() - (ULONGLONG)hd->written_at_ms > 2000) return false; // app stopped sending
+        if (GetTickCount64() - (ULONGLONG)hd->written_at_ms > kStaleFrameMs) return false;
         for (int attempt = 0; attempt < 4; attempt++) {
             LONG s1 = hd->seq;
             MemoryBarrier();
@@ -153,7 +172,7 @@ private:
                 if (fx < 0) fx = 0;
                 UINT32 x0 = (UINT32)fx, x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
                 UINT32 wx = (UINT32)((fx - x0) * 256);
-                UINT32 a = s[y0 * sw + x0], b = s[y0 * sw + x1], c = s[y1 * sw + x0], e = s[y1 * sw + x1], out = 0xFF000000;
+                UINT32 a = s[y0 * sw + x0], b = s[y0 * sw + x1], c = s[y1 * sw + x0], e = s[y1 * sw + x1], out = kOpaqueBlack;
                 for (int sh8 = 0; sh8 <= 16; sh8 += 8) {
                     UINT32 top = ((a >> sh8 & 255) * (256 - wx) + (b >> sh8 & 255) * wx) >> 8;
                     UINT32 bot = ((c >> sh8 & 255) * (256 - wx) + (e >> sh8 & 255) * wx) >> 8;
@@ -166,14 +185,14 @@ private:
 
     // Dark frame with a small camera outline, shown until the app sends video.
     static void Placeholder(UINT32 *d, UINT32 w, UINT32 h) {
-        for (size_t i = 0, n = (size_t)w * h; i < n; i++) d[i] = 0xFF1E1F24;
+        for (size_t i = 0, n = (size_t)w * h; i < n; i++) d[i] = kPlaceholderBackground;
         UINT32 cw = w / 8, ch = cw * 2 / 3, x0 = (w - cw) / 2, y0 = (h - ch) / 2, t = w / 320 + 1;
         for (UINT32 y = y0; y < y0 + ch; y++)
             for (UINT32 x = x0; x < x0 + cw; x++) {
                 bool edge = x < x0 + t || x >= x0 + cw - t || y < y0 + t || y >= y0 + ch - t;
                 long dx = (long)x - (long)(x0 + cw / 2), dy = (long)y - (long)(y0 + ch / 2), r = (long)ch / 4;
                 bool lens = dx * dx + dy * dy <= r * r && dx * dx + dy * dy >= (r - (long)t) * (r - (long)t);
-                if (edge || lens) d[y * w + x] = 0xFF5A5F6E;
+                if (edge || lens) d[y * w + x] = kPlaceholderIcon;
             }
     }
 
@@ -186,17 +205,16 @@ private:
 
 // ---- preferred format (written by the app to ProgramData) -----------------------------------
 
-struct Format { UINT32 w, h, fps; };
-
 static Format PreferredFormat() {
     wchar_t path[MAX_PATH];
-    Format f = {1280, 720, 30};
-    if (!ExpandEnvironmentStringsW(L"%ProgramData%\\DSLR Webcam Studio\\vcam.ini", path, MAX_PATH)) return f;
-    UINT w = GetPrivateProfileIntW(L"VirtualCamera", L"Width", 1280, path);
-    UINT h = GetPrivateProfileIntW(L"VirtualCamera", L"Height", 720, path);
-    UINT fps = GetPrivateProfileIntW(L"VirtualCamera", L"Fps", 30, path);
-    if ((w == 640 && h == 360) || (w == 1280 && h == 720) || (w == 1920 && h == 1080)) { f.w = w; f.h = h; }
-    if (fps >= 5 && fps <= 60) f.fps = fps;
+    Format f = {kSizes[1].w, kSizes[1].h, kDefaultFps};
+    if (!ExpandEnvironmentStringsW(kPrefsPath, path, MAX_PATH)) return f;
+    // User-writable file: every value is validated against what the camera offers.
+    UINT w = GetPrivateProfileIntW(L"VirtualCamera", L"Width", f.w, path);
+    UINT h = GetPrivateProfileIntW(L"VirtualCamera", L"Height", f.h, path);
+    UINT fps = GetPrivateProfileIntW(L"VirtualCamera", L"Fps", f.fps, path);
+    if (IsOfferedSize(w, h)) { f.w = w; f.h = h; }
+    if (fps >= kMinFps && fps <= kMaxFps) f.fps = fps;
     return f;
 }
 
@@ -432,13 +450,16 @@ STDMETHODIMP Stream::RequestSample(IUnknown *token) {
     if (SUCCEEDED(hr)) hr = handler->GetCurrentMediaType(&type);
     if (SUCCEEDED(hr)) hr = type->GetGUID(MF_MT_SUBTYPE, &subtype);
     if (SUCCEEDED(hr)) hr = MFGetAttributeSize(type, MF_MT_FRAME_SIZE, &w, &h);
-    if (SUCCEEDED(hr) && FAILED(MFGetAttributeRatio(type, MF_MT_FRAME_RATE, &num, &den))) { num = 30; den = 1; }
+    if (SUCCEEDED(hr) && FAILED(MFGetAttributeRatio(type, MF_MT_FRAME_RATE, &num, &den))) { num = kDefaultFps; den = 1; }
+    // Only produce the formats this camera advertised.
+    if (SUCCEEDED(hr) && (!IsOfferedSize(w, h) || (subtype != MFVideoFormat_NV12 && subtype != MFVideoFormat_RGB32) ||
+                          num == 0 || den == 0 || num / den > kMaxFps)) hr = MF_E_INVALIDMEDIATYPE;
     SafeRelease(type);
     SafeRelease(handler);
     if (FAILED(hr)) { LeaveCriticalSection(&cs_); return hr; }
 
     // Pace samples to the negotiated frame rate.
-    LONGLONG interval = 10000000LL * (den ? den : 1) / (num ? num : 30);
+    LONGLONG interval = 10000000LL * den / num;
     LONGLONG now = MFGetSystemTime();
     if (nextDue_ == 0 || nextDue_ < now - interval) nextDue_ = now;
     LONGLONG wait = nextDue_ - now;
@@ -493,14 +514,13 @@ public:
 
         // Preferred format first (what the app outputs), then the other sizes; NV12 and RGB32 each.
         Format pref = PreferredFormat();
-        Format sizes[3] = {{1920, 1080, 0}, {1280, 720, 0}, {640, 360, 0}};
         IMFMediaType *types[16] = {};
         DWORD n = 0;
         const GUID *subs[2] = {&MFVideoFormat_NV12, &MFVideoFormat_RGB32};
         for (int s = 0; s < 2 && SUCCEEDED(hr); s++) hr = CreateVideoType(*subs[s], pref.w, pref.h, pref.fps, &types[n++]);
-        for (int i = 0; i < 3 && SUCCEEDED(hr); i++) {
-            if (sizes[i].w == pref.w) continue;
-            for (int s = 0; s < 2 && SUCCEEDED(hr); s++) hr = CreateVideoType(*subs[s], sizes[i].w, sizes[i].h, pref.fps, &types[n++]);
+        for (const Format &size : kSizes) {
+            if (size.w == pref.w) continue;
+            for (int s = 0; s < 2 && SUCCEEDED(hr); s++) hr = CreateVideoType(*subs[s], size.w, size.h, pref.fps, &types[n++]);
         }
 
         IMFStreamDescriptor *sd = nullptr;
@@ -603,7 +623,8 @@ public:
             DWORD idx = 0;
             BOOL sel = FALSE;
             if (SUCCEEDED(sd->GetMediaTypeHandler(&in)) && SUCCEEDED(in->GetCurrentMediaType(&mt)) &&
-                SUCCEEDED(pd_->GetStreamDescriptorByIndex(idx, &sel, &own)) && SUCCEEDED(own->GetMediaTypeHandler(&ours)))
+                SUCCEEDED(pd_->GetStreamDescriptorByIndex(idx, &sel, &own)) && SUCCEEDED(own->GetMediaTypeHandler(&ours)) &&
+                ours->IsMediaTypeSupported(mt, nullptr) == S_OK) // only a type we advertised
                 ours->SetCurrentMediaType(mt);
             SafeRelease(ours); SafeRelease(own); SafeRelease(mt); SafeRelease(in);
         }
@@ -870,7 +891,7 @@ extern "C" HRESULT WINAPI DwsVCamCreate(int lifetime, IUnknown **camera) {
     if (!camera) return E_POINTER;
     *camera = nullptr;
     MFStartup(MF_VERSION, MFSTARTUP_LITE);
-    HMODULE lib = LoadLibraryW(L"mfsensorgroup.dll");
+    HMODULE lib = LoadLibraryExW(L"mfsensorgroup.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32); // never from the app folder
     if (!lib) return HRESULT_FROM_WIN32(GetLastError());
     auto create = (PFN_MFCreateVirtualCamera)GetProcAddress(lib, "MFCreateVirtualCamera");
     if (!create) return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND); // Windows 10 or older

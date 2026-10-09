@@ -12,15 +12,17 @@ namespace DslrWebcamStudio
 {
     public abstract class LiveSource
     {
+        const int NapStepMs = 50;
+
         readonly object gate = new object();
-        Bitmap latest;
+        Bitmap latest, spare; // spare: the previous frame, reused for the next one to avoid per-frame allocations
         int seq;
         Thread thread;
         protected volatile bool Stopping;
         public readonly RateMeter Meter = new RateMeter(SystemClock.Instance);
 
         public volatile string Model = "";
-        public volatile string State = "Stopped";   // user-facing status line
+        public volatile string State = Strings.Stopped;   // user-facing status line
         public volatile bool Faulted;
 
         public abstract string Name { get; }
@@ -35,9 +37,13 @@ namespace DslrWebcamStudio
         public void Stop()
         {
             Stopping = true;
-            if (thread != null) { thread.Join(4000); thread = null; }
-            lock (gate) { if (latest != null) { latest.Dispose(); latest = null; } }
-            State = "Stopped";
+            if (thread != null) { thread.Join(Timing.ThreadJoinMs); thread = null; }
+            lock (gate)
+            {
+                if (latest != null) { latest.Dispose(); latest = null; }
+                if (spare != null) { spare.Dispose(); spare = null; }
+            }
+            State = Strings.Stopped;
         }
 
         public int Seq { get { lock (gate) return seq; } }
@@ -53,11 +59,25 @@ namespace DslrWebcamStudio
             }
         }
 
+        // A bitmap to draw the next frame into: the recycled previous frame when the size matches.
+        protected Bitmap RentFrame(int width, int height)
+        {
+            Bitmap b;
+            lock (gate) { b = spare; spare = null; }
+            if (b != null && b.Width == width && b.Height == height) return b;
+            if (b != null) b.Dispose();
+            return new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+        }
+
         protected void Publish(Bitmap frame)
         {
-            Bitmap old;
-            lock (gate) { old = latest; latest = frame; seq++; }
-            if (old != null) old.Dispose();
+            lock (gate)
+            {
+                if (spare != null) spare.Dispose();
+                spare = latest; // no longer visible to readers once replaced (readers hold the lock)
+                latest = frame;
+                seq++;
+            }
             Meter.Tick();
         }
 
@@ -66,7 +86,7 @@ namespace DslrWebcamStudio
         // Sleep in small steps so Stop() returns quickly.
         protected void Nap(int ms)
         {
-            for (int t = 0; t < ms && !Stopping; t += 50) Thread.Sleep(Math.Min(50, ms - t));
+            for (int t = 0; t < ms && !Stopping; t += NapStepMs) Thread.Sleep(Math.Min(NapStepMs, ms - t));
         }
     }
 
@@ -76,15 +96,15 @@ namespace DslrWebcamStudio
         public uint? Mode, Iso, Shutter, Aperture;
         public override string ToString()
         {
-            return CameraValues.ModeName(Mode) + "  |  ISO " + CameraValues.IsoName(Iso) + "  |  " +
-                   CameraValues.ShutterName(Shutter) + "  |  " + CameraValues.ApertureName(Aperture);
+            return string.Format(Strings.ExposureFormat, CameraValues.ModeName(Mode), CameraValues.IsoName(Iso),
+                                 CameraValues.ShutterName(Shutter), CameraValues.ApertureName(Aperture));
         }
     }
 
     // Canon EOS live view over USB using our PTP implementation (CanonEos.cs).
     public sealed class CanonSource : LiveSource
     {
-        public override string Name { get { return "Canon EOS (USB)"; } }
+        public override string Name { get { return Strings.SourceCanon; } }
 
         readonly ConcurrentQueue<KeyValuePair<uint, uint>> requests = new ConcurrentQueue<KeyValuePair<uint, uint>>();
         public volatile CameraExposure Exposure;     // null until connected
@@ -102,8 +122,7 @@ namespace DslrWebcamStudio
             while (requests.TryDequeue(out r))
             {
                 var resp = lv.SetProperty(r.Key, r.Value);
-                CommandError = resp.Ok ? null
-                    : "Camera refused the change (" + Ptp.RcName(resp.Code) + "). Set the mode dial to M.";
+                CommandError = resp.Ok ? null : string.Format(Strings.CameraRefused, Ptp.RcName(resp.Code));
             }
         }
 
@@ -123,81 +142,90 @@ namespace DslrWebcamStudio
                 CanonLiveView lv = null;
                 try
                 {
-                    State = "Connecting to camera...";
+                    State = Strings.Connecting;
                     lv = CanonLiveView.Open(null);
                     Model = lv.Model;
                     Faulted = false;
-                    State = "Live";
+                    State = Strings.Live;
                     UpdateExposure(lv);
                     var lastExposure = DateTime.UtcNow;
                     while (!Stopping)
                     {
                         if (!requests.IsEmpty) { ApplyRequests(lv); UpdateExposure(lv); }
-                        if ((DateTime.UtcNow - lastExposure).TotalMilliseconds > 500)
+                        if ((DateTime.UtcNow - lastExposure).TotalMilliseconds > Timing.ExposureRefreshMs)
                         {
                             UpdateExposure(lv); // dial or settings changed on the camera itself
                             lastExposure = DateTime.UtcNow;
                         }
                         var jpeg = lv.ReadJpeg();
-                        if (jpeg == null) { Thread.Sleep(5); continue; }
-                        Publish(Decode(jpeg));
+                        if (jpeg == null) { Thread.Sleep(Timing.CameraPollIdleMs); continue; }
+                        var frame = Decode(jpeg);
+                        if (frame != null) Publish(frame);
                     }
                 }
-                catch (Exception e)
+                catch (Exception e) // any camera/USB failure: report it and reconnect
                 {
                     Faulted = true;
-                    State = "Camera: " + e.Message + " Retrying...";
+                    State = string.Format(Strings.CameraErrorRetrying, e.Message);
                 }
                 finally
                 {
                     Exposure = null;
                     if (lv != null) lv.Dispose();
                 }
-                if (!Stopping) Nap(2000); // camera unplugged, asleep, or busy: try again
+                if (!Stopping) Nap(Timing.CameraRetryMs); // camera unplugged, asleep, or busy: try again
             }
         }
 
-        static Bitmap Decode(byte[] jpeg)
+        // Decodes into a recycled bitmap; returns null for a corrupt frame (skipped).
+        Bitmap Decode(byte[] jpeg)
         {
-            using (var ms = new MemoryStream(jpeg))
-            using (var img = Image.FromStream(ms, false, false))
+            try
             {
-                var bmp = new Bitmap(img.Width, img.Height, PixelFormat.Format32bppPArgb);
-                using (var g = Graphics.FromImage(bmp)) g.DrawImageUnscaled(img, 0, 0);
-                return bmp;
+                using (var ms = new MemoryStream(jpeg))
+                using (var img = Image.FromStream(ms, false, false))
+                {
+                    var bmp = RentFrame(img.Width, img.Height);
+                    using (var g = Graphics.FromImage(bmp)) g.DrawImageUnscaled(img, 0, 0);
+                    return bmp;
+                }
             }
+            catch (ArgumentException) { return null; } // not a valid image
         }
     }
 
     // 3:2 moving test pattern at ~29.97 fps, sized like Canon live view (960x640).
     public sealed class TestPatternSource : LiveSource
     {
-        public override string Name { get { return "Test pattern"; } }
+        const int W = 960, H = 640, BarWidth = 24, BarStep = 8, FontSize = 40;
+        static readonly Color[] Bars = {
+            Color.FromArgb(192, 192, 192), Color.FromArgb(192, 192, 0), Color.FromArgb(0, 192, 192), Color.FromArgb(0, 192, 0),
+            Color.FromArgb(192, 0, 192), Color.FromArgb(192, 0, 0), Color.FromArgb(0, 0, 192),
+        };
+
+        public override string Name { get { return Strings.SourceTestPattern; } }
 
         protected override void Run()
         {
-            Model = "Test pattern 960x640";
-            State = "Live";
-            const int W = 960, H = 640;
-            var colors = new[] { Color.FromArgb(192, 192, 192), Color.FromArgb(192, 192, 0), Color.FromArgb(0, 192, 192),
-                                 Color.FromArgb(0, 192, 0), Color.FromArgb(192, 0, 192), Color.FromArgb(192, 0, 0), Color.FromArgb(0, 0, 192) };
+            Model = Strings.TestPatternModel;
+            State = Strings.Live;
             var clock = SystemClock.Instance;
             double next = clock.Now;
-            using (var font = new Font("Segoe UI", 40, FontStyle.Bold))
+            using (var font = new Font(Theme.FontName, FontSize, FontStyle.Bold))
             {
                 for (int n = 0; !Stopping; n++)
                 {
-                    var bmp = new Bitmap(W, H, PixelFormat.Format32bppPArgb);
+                    var bmp = RentFrame(W, H);
                     using (var g = Graphics.FromImage(bmp))
                     {
-                        int bw = W / colors.Length;
-                        for (int i = 0; i < colors.Length; i++)
-                            using (var b = new SolidBrush(colors[i])) g.FillRectangle(b, i * bw, 0, bw + 1, H);
-                        g.FillRectangle(Brushes.White, (n * 8) % W, 0, 24, H);
-                        g.DrawString("frame " + n, font, Brushes.Black, 40, H - 110);
+                        int bw = W / Bars.Length;
+                        for (int i = 0; i < Bars.Length; i++)
+                            using (var b = new SolidBrush(Bars[i])) g.FillRectangle(b, i * bw, 0, bw + 1, H);
+                        g.FillRectangle(Brushes.White, (n * BarStep) % W, 0, BarWidth, H);
+                        g.DrawString(string.Format(Strings.TestPatternFrame, n), font, Brushes.Black, 40, H - 110);
                     }
                     Publish(bmp);
-                    next += 1 / 29.97;
+                    next += 1 / Timing.TestPatternFps;
                     double wait = next - clock.Now;
                     if (wait > 0) clock.Sleep(wait); else next = clock.Now;
                 }

@@ -5,6 +5,7 @@
 //   GetViewFinderData 0x9153 -> JPEG frame.
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using System.Threading;
 
@@ -77,24 +78,37 @@ namespace DslrWebcamStudio
         }
     }
 
+    // Reads PTP datasets from the camera. The data is untrusted, so every read is bounds-checked
+    // and malformed input raises InvalidDataException instead of reading past the buffer.
     sealed class PtpReader
     {
         readonly byte[] d;
         int pos;
-        public PtpReader(byte[] data) { d = data; }
-        public ushort U16() { var v = BitConverter.ToUInt16(d, pos); pos += 2; return v; }
-        public uint U32() { var v = BitConverter.ToUInt32(d, pos); pos += 4; return v; }
+        public PtpReader(byte[] data) { d = data ?? new byte[0]; }
+
+        void Need(long bytes)
+        {
+            if (bytes < 0 || pos + bytes > d.Length) throw new InvalidDataException(Strings.MalformedData);
+        }
+
+        public ushort U16() { Need(2); var v = BitConverter.ToUInt16(d, pos); pos += 2; return v; }
+        public uint U32() { Need(4); var v = BitConverter.ToUInt32(d, pos); pos += 4; return v; }
+
         public List<ushort> U16Array()
         {
             uint n = U32();
-            var l = new List<ushort>((int)Math.Min(n, 4096));
+            Need((long)n * 2);
+            var l = new List<ushort>((int)n);
             for (uint i = 0; i < n; i++) l.Add(U16());
             return l;
         }
+
         public string Str()
         {
+            Need(1);
             int n = d[pos++];
             if (n == 0) return "";
+            Need(n * 2);
             var s = Encoding.Unicode.GetString(d, pos, n * 2).TrimEnd('\0');
             pos += n * 2;
             return s;
@@ -131,7 +145,7 @@ namespace DslrWebcamStudio
         {
             var info = FindCamera();
             if (info == null)
-                throw new InvalidOperationException("No Canon camera found. Connect your Canon EOS camera over USB and switch it on.");
+                throw new InvalidOperationException(Strings.NoCanonCamera);
             var dev = MtpDevice.Open(info);
             var lv = new CanonLiveView(dev, log);
             try { lv.Start(); }
@@ -150,7 +164,7 @@ namespace DslrWebcamStudio
                     "  vendor ext 0x" + DeviceInfo.VendorExtensionId.ToString("X"));
                 foreach (var op in new[] { Ptp.OC_EOS_SetRemoteMode, Ptp.OC_EOS_SetDevicePropValueEx, Ptp.OC_EOS_GetViewFinderData })
                     if (!DeviceInfo.Operations.Contains(op))
-                        throw new NotSupportedException("Camera does not advertise PTP op 0x" + op.ToString("X4") + "; live view over USB isn't available.");
+                        throw new NotSupportedException(string.Format(Strings.NoLiveViewOp, op));
             }
             else log("GetDeviceInfo: " + Ptp.RcName(di.Code));
 
@@ -218,7 +232,7 @@ namespace DslrWebcamStudio
         // Returns one live-view JPEG, or null if the camera has no new frame yet.
         public byte[] ReadJpeg()
         {
-            if ((DateTime.UtcNow - lastEventPoll).TotalMilliseconds > 500) DrainEvents();
+            if ((DateTime.UtcNow - lastEventPoll).TotalMilliseconds > Timing.EventPollMs) DrainEvents();
             var r = dev.ExecuteRead(Ptp.OC_EOS_GetViewFinderData, 0x00100000);
             if (r.Code == Ptp.RC_CANON_NotReady || r.Code == Ptp.RC_DeviceBusy) return null;
             Check("GetViewFinderData", r);
@@ -263,7 +277,7 @@ namespace DslrWebcamStudio
 
         static void Check(string what, PtpResponse r)
         {
-            if (!r.Ok) throw new InvalidOperationException(what + " failed: " + Ptp.RcName(r.Code));
+            if (!r.Ok) throw new InvalidOperationException(string.Format(Strings.PtpFailed, what, Ptp.RcName(r.Code)));
         }
 
         public void Dispose()

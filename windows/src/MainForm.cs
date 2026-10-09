@@ -1,5 +1,5 @@
 // Main window: source, Streaming Video Output Resolution, Target Streaming Framerate,
-// aspect handling, live preview and status.
+// aspect, flips, image cleanup, camera exposure, virtual camera, live preview and status.
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -12,124 +12,51 @@ namespace DslrWebcamStudio
 {
     public sealed class MainForm : Form
     {
+        const int SourceCanonIndex = 0, SourceTestIndex = 1;
+        const string SnapshotTimeFormat = "yyyyMMdd_HHmmss";
+
         readonly string configPath;
         StreamSettings settings;
         LiveSource source;
         OutputEngine engine;
         int invalidatePending;
-
-        readonly ComboBox sourceBox = Combo(150), resBox = Combo(170), fpsBox = Combo(80), fitBox = Combo(170), noiseBox = Combo(90), sharpBox = Combo(90);
-        readonly ComboBox isoBox = Combo(80), shutterBox = Combo(80);
         bool syncingCamera; // true while the UI mirrors camera values, so they aren't sent back
-        readonly ToolStripStatusLabel exposureLabel = new ToolStripStatusLabel();
-        readonly CheckBox mirrorBox = Check("Mirror left/right"), flipBox = Check("Flip upside-down");
-        readonly Button startBtn = new Button { Text = "Start", Width = 90, Height = 28 };
-        readonly Button snapBtn = new Button { Text = "Snapshot", Width = 90, Height = 28 };
-        readonly Button diagBtn = new Button { Text = "Diagnostics", Width = 100, Height = 28 };
-        readonly Button vcamBtn = new Button { Text = "Install virtual camera", Width = 170, Height = 28 };
-        readonly ToolStripStatusLabel vcamLabel = new ToolStripStatusLabel();
-        readonly VirtualCamera.Writer vcamWriter = new VirtualCamera.Writer();
         string vcamError;
-        readonly Button coffeeBtn = new Button { Text = "☕ Buy me a coffee", Width = 140, Height = 28 };
+
+        readonly ComboBox sourceBox = Combo(150), resBox = Combo(170), fpsBox = Combo(80), fitBox = Combo(170);
+        readonly ComboBox noiseBox = Combo(90), sharpBox = Combo(90), isoBox = Combo(80), shutterBox = Combo(80);
+        readonly CheckBox mirrorBox = Check(Strings.Mirror), flipBox = Check(Strings.Flip);
+        readonly Button startBtn = MakeButton(Strings.Start, 90), snapBtn = MakeButton(Strings.Snapshot, 90);
+        readonly Button diagBtn = MakeButton(Strings.Diagnostics, 100), vcamBtn = MakeButton(Strings.InstallVirtualCamera, 170);
+        readonly Button coffeeBtn = MakeButton(Strings.BuyCoffee, 140);
         readonly PreviewPanel preview = new PreviewPanel();
         readonly ToolStripStatusLabel stateLabel = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+        readonly ToolStripStatusLabel vcamLabel = new ToolStripStatusLabel();
+        readonly ToolStripStatusLabel exposureLabel = new ToolStripStatusLabel();
         readonly ToolStripStatusLabel statsLabel = new ToolStripStatusLabel();
-        readonly System.Windows.Forms.Timer statusTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        readonly System.Windows.Forms.Timer statusTimer = new System.Windows.Forms.Timer { Interval = Timing.StatusRefreshMs };
+        readonly VirtualCamera.Writer vcamWriter = new VirtualCamera.Writer();
 
         public MainForm(string configPath)
         {
             this.configPath = configPath;
             settings = StreamSettings.Load(configPath);
 
-            Text = "DSLR Webcam Studio " + AppInfo.Version;
-            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
-            ClientSize = new Size(1000, 640);
-            MinimumSize = new Size(760, 480);
-            Font = new Font("Segoe UI", 9f);
-            BackColor = Color.FromArgb(32, 32, 36);
-            ForeColor = Color.Gainsboro;
+            Text = Strings.AppName + " " + AppInfo.Version;
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (ArgumentException) { }
+            ClientSize = Theme.WindowSize;
+            MinimumSize = Theme.WindowMinSize;
+            Font = new Font(Theme.FontName, Theme.FontSize);
+            BackColor = Theme.Background;
+            ForeColor = Theme.Text;
 
-            sourceBox.Items.AddRange(new object[] { "Canon EOS (USB)", "Test pattern" });
-            sourceBox.SelectedIndex = 0;
-            foreach (int r in StreamSettings.Resolutions)
-            {
-                int w, h;
-                StreamSettings.ResolutionToSize(r, out w, out h);
-                resBox.Items.Add(new Choice(w + " x " + h + "  (" + r + "p)", r));
-            }
-            foreach (int f in StreamSettings.FpsChoices) fpsBox.Items.Add(new Choice(f + " fps", f));
-            fitBox.Items.Add(new Choice("Fit (black side bars)", (int)FitMode.Fit));
-            fitBox.Items.Add(new Choice("Fill (crop to 16:9)", (int)FitMode.Fill));
-            Select(resBox, settings.Resolution);
-            Select(fpsBox, settings.Fps);
-            Select(fitBox, (int)settings.Fit);
-            for (int i = 0; i < StreamSettings.Levels.Length; i++)
-            {
-                noiseBox.Items.Add(new Choice(StreamSettings.Levels[i], i));
-                sharpBox.Items.Add(new Choice(StreamSettings.Levels[i], i));
-            }
-            Select(noiseBox, settings.NoiseReduction);
-            Select(sharpBox, settings.Sharpness);
-            foreach (var kv in CameraValues.IsoChoices) isoBox.Items.Add(new Choice(kv.Value, (int)kv.Key));
-            foreach (var kv in CameraValues.ShutterChoices) shutterBox.Items.Add(new Choice(kv.Value, (int)kv.Key));
-            isoBox.Enabled = shutterBox.Enabled = false;
-            isoBox.SelectedIndexChanged += delegate { SendCameraSetting(Ptp.DPC_EOS_ISOSpeed, isoBox); };
-            shutterBox.SelectedIndexChanged += delegate { SendCameraSetting(Ptp.DPC_EOS_ShutterSpeed, shutterBox); };
-            mirrorBox.Checked = settings.FlipHorizontal;
-            flipBox.Checked = settings.FlipVertical;
-
-            resBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithResolution(Value(resBox))); };
-            fpsBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithFps(Value(fpsBox))); };
-            fitBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithFit((FitMode)Value(fitBox))); };
-            noiseBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithEnhancement(Value(noiseBox), Value(sharpBox))); };
-            sharpBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithEnhancement(Value(noiseBox), Value(sharpBox))); };
-            mirrorBox.CheckedChanged += delegate { ApplySetting(settings.WithFlip(mirrorBox.Checked, flipBox.Checked)); };
-            flipBox.CheckedChanged += delegate { ApplySetting(settings.WithFlip(mirrorBox.Checked, flipBox.Checked)); };
-            sourceBox.SelectedIndexChanged += delegate { if (engine != null) { StopStreaming(); StartStreaming(); } };
-            startBtn.Click += delegate { if (engine == null) StartStreaming(); else StopStreaming(); };
-            snapBtn.Click += delegate { SaveSnapshot(); };
-            diagBtn.Click += delegate { RunDiagnostics(); };
-            coffeeBtn.Click += delegate { OpenUrl(AppInfo.DonateUrl); };
-            vcamBtn.Click += delegate { InstallVirtualCamera(); };
-            coffeeBtn.Visible = AppInfo.DonateConfigured;
-
-            var bar = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(8, 8, 8, 4), WrapContents = true, BackColor = Color.FromArgb(40, 40, 46),
-            };
-            bar.Controls.AddRange(new Control[] {
-                startBtn, snapBtn, diagBtn, vcamBtn, coffeeBtn, Spacer(),
-                Pair("Source", sourceBox),
-                Pair("Streaming Video Output Resolution", resBox),
-                Pair("Target Streaming Framerate", fpsBox),
-                Pair("Aspect", fitBox),
-                mirrorBox, flipBox,
-                Pair("Noise reduction", noiseBox),
-                Pair("Sharpness", sharpBox),
-                Pair("Camera ISO", isoBox),
-                Pair("Shutter", shutterBox),
-            });
-            foreach (Control c in new Control[] { startBtn, snapBtn, diagBtn, vcamBtn, coffeeBtn })
-            {
-                var b = (Button)c;
-                b.FlatStyle = FlatStyle.Flat;
-                b.BackColor = Color.FromArgb(58, 58, 66);
-                b.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 90);
-                b.Margin = new Padding(0, 0, 6, 6);
-            }
-            startBtn.BackColor = Color.FromArgb(0, 102, 204);
-            coffeeBtn.BackColor = Color.FromArgb(255, 196, 57);
-            coffeeBtn.ForeColor = Color.FromArgb(40, 30, 10);
-
-            var status = new StatusStrip { BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.Gainsboro, SizingGrip = false };
-            status.Items.AddRange(new ToolStripItem[] { stateLabel, vcamLabel, exposureLabel, statsLabel });
-
+            FillChoices();
+            WireEvents();
+            Controls.Add(preview);
+            Controls.Add(BuildToolbar());
+            Controls.Add(BuildStatusBar());
             preview.Dock = DockStyle.Fill;
             preview.Paint += OnPreviewPaint;
-            Controls.Add(preview);
-            Controls.Add(bar);
-            Controls.Add(status);
 
             statusTimer.Tick += delegate { UpdateStatus(); };
             statusTimer.Start();
@@ -137,15 +64,102 @@ namespace DslrWebcamStudio
             UpdateStatus();
         }
 
+        // ---- layout --------------------------------------------------------
+
+        void FillChoices()
+        {
+            sourceBox.Items.AddRange(new object[] { Strings.SourceCanon, Strings.SourceTestPattern });
+            sourceBox.SelectedIndex = SourceCanonIndex;
+            foreach (int r in StreamSettings.Resolutions)
+            {
+                int w, h;
+                StreamSettings.ResolutionToSize(r, out w, out h);
+                resBox.Items.Add(new Choice(string.Format(Strings.ResolutionItemFormat, w, h, r), r));
+            }
+            foreach (int f in StreamSettings.FpsChoices) fpsBox.Items.Add(new Choice(string.Format(Strings.FpsItemFormat, f), f));
+            fitBox.Items.Add(new Choice(Strings.AspectFit, (int)FitMode.Fit));
+            fitBox.Items.Add(new Choice(Strings.AspectFill, (int)FitMode.Fill));
+            for (int i = 0; i < Strings.Levels.Length; i++)
+            {
+                noiseBox.Items.Add(new Choice(Strings.Levels[i], i));
+                sharpBox.Items.Add(new Choice(Strings.Levels[i], i));
+            }
+            foreach (var kv in CameraValues.IsoChoices) isoBox.Items.Add(new Choice(kv.Value, (int)kv.Key));
+            foreach (var kv in CameraValues.ShutterChoices) shutterBox.Items.Add(new Choice(kv.Value, (int)kv.Key));
+
+            Select(resBox, settings.Resolution);
+            Select(fpsBox, settings.Fps);
+            Select(fitBox, (int)settings.Fit);
+            Select(noiseBox, settings.NoiseReduction);
+            Select(sharpBox, settings.Sharpness);
+            mirrorBox.Checked = settings.FlipHorizontal;
+            flipBox.Checked = settings.FlipVertical;
+            isoBox.Enabled = shutterBox.Enabled = false;
+            coffeeBtn.Visible = AppInfo.DonateConfigured;
+        }
+
+        void WireEvents()
+        {
+            resBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithResolution(Value(resBox))); };
+            fpsBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithFps(Value(fpsBox))); };
+            fitBox.SelectedIndexChanged += delegate { ApplySetting(settings.WithFit((FitMode)Value(fitBox))); };
+            EventHandler enhancement = delegate { ApplySetting(settings.WithEnhancement(Value(noiseBox), Value(sharpBox))); };
+            noiseBox.SelectedIndexChanged += enhancement;
+            sharpBox.SelectedIndexChanged += enhancement;
+            EventHandler flips = delegate { ApplySetting(settings.WithFlip(mirrorBox.Checked, flipBox.Checked)); };
+            mirrorBox.CheckedChanged += flips;
+            flipBox.CheckedChanged += flips;
+            isoBox.SelectedIndexChanged += delegate { SendCameraSetting(Ptp.DPC_EOS_ISOSpeed, isoBox); };
+            shutterBox.SelectedIndexChanged += delegate { SendCameraSetting(Ptp.DPC_EOS_ShutterSpeed, shutterBox); };
+            sourceBox.SelectedIndexChanged += delegate { if (engine != null) { StopStreaming(); StartStreaming(); } };
+            startBtn.Click += delegate { if (engine == null) StartStreaming(); else StopStreaming(); };
+            snapBtn.Click += delegate { SaveSnapshot(); };
+            diagBtn.Click += delegate { RunDiagnostics(); };
+            vcamBtn.Click += delegate { InstallVirtualCamera(); };
+            coffeeBtn.Click += delegate { OpenUrl(AppInfo.DonateUrl); };
+        }
+
+        Control BuildToolbar()
+        {
+            var bar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(8, 8, 8, 4), WrapContents = true, BackColor = Theme.Bar,
+            };
+            bar.Controls.AddRange(new Control[] {
+                startBtn, snapBtn, diagBtn, vcamBtn, coffeeBtn, Spacer(),
+                Pair(Strings.Source, sourceBox),
+                Pair(Strings.Resolution, resBox),
+                Pair(Strings.Framerate, fpsBox),
+                Pair(Strings.Aspect, fitBox),
+                mirrorBox, flipBox,
+                Pair(Strings.NoiseReduction, noiseBox),
+                Pair(Strings.Sharpness, sharpBox),
+                Pair(Strings.CameraIso, isoBox),
+                Pair(Strings.Shutter, shutterBox),
+            });
+            startBtn.BackColor = Theme.StartButton;
+            coffeeBtn.BackColor = Theme.CoffeeButton;
+            coffeeBtn.ForeColor = Theme.CoffeeText;
+            return bar;
+        }
+
+        Control BuildStatusBar()
+        {
+            var status = new StatusStrip { BackColor = Theme.Bar, ForeColor = Theme.Text, SizingGrip = false };
+            status.Items.AddRange(new ToolStripItem[] { stateLabel, vcamLabel, exposureLabel, statsLabel });
+            return status;
+        }
+
         // ---- streaming ---------------------------------------------------
 
         void StartStreaming()
         {
-            source = sourceBox.SelectedIndex == 1 ? (LiveSource)new TestPatternSource() : new CanonSource();
+            source = sourceBox.SelectedIndex == SourceTestIndex ? (LiveSource)new TestPatternSource() : new CanonSource();
             source.Start();
             StartEngine();
-            startBtn.Text = "Stop";
-            startBtn.BackColor = Color.FromArgb(170, 50, 50);
+            startBtn.Text = Strings.Stop;
+            startBtn.BackColor = Theme.StopButton;
             diagBtn.Enabled = false;
         }
 
@@ -161,14 +175,14 @@ namespace DslrWebcamStudio
         {
             if (engine != null) { engine.Stop(); engine = null; }
             if (source != null) { source.Stop(); source = null; }
-            startBtn.Text = "Start";
-            startBtn.BackColor = Color.FromArgb(0, 102, 204);
+            startBtn.Text = Strings.Start;
+            startBtn.BackColor = Theme.StartButton;
             diagBtn.Enabled = true;
             preview.Invalidate();
             UpdateStatus();
         }
 
-        // The output format changes instantly; the camera session keeps running.
+        // Format changes restart only the output; the camera session keeps running.
         void ApplySetting(StreamSettings next)
         {
             if (next.Equals(settings)) return;
@@ -176,8 +190,10 @@ namespace DslrWebcamStudio
             settings = next;
             VirtualCamera.WritePreferredFormat(settings);
             try { settings.Save(configPath); }
-            catch (Exception e) { stateLabel.Text = "Could not save settings: " + e.Message; }
-            if (engine != null && sameFormat)
+            catch (IOException e) { stateLabel.Text = string.Format(Strings.SettingsSaveFailed, e.Message); }
+            catch (UnauthorizedAccessException e) { stateLabel.Text = string.Format(Strings.SettingsSaveFailed, e.Message); }
+            if (engine == null) { UpdateStatus(); return; }
+            if (sameFormat)
             {
                 // Flip and cleanup keep the output format, so update the running output in place.
                 engine.FlipHorizontal = next.FlipHorizontal;
@@ -185,7 +201,7 @@ namespace DslrWebcamStudio
                 engine.NoiseReduction = next.NoiseReduction;
                 engine.Sharpness = next.Sharpness;
             }
-            else if (engine != null)
+            else
             {
                 engine.Stop();
                 StartEngine();
@@ -199,7 +215,7 @@ namespace DslrWebcamStudio
             if (Interlocked.Exchange(ref invalidatePending, 1) == 0 && IsHandleCreated)
             {
                 try { BeginInvoke((Action)(() => { invalidatePending = 0; preview.Invalidate(); })); }
-                catch (InvalidOperationException) { }
+                catch (InvalidOperationException) { } // window closing
             }
         }
 
@@ -214,13 +230,13 @@ namespace DslrWebcamStudio
                 g.InterpolationMode = InterpolationMode.Bilinear;
                 g.PixelOffsetMode = PixelOffsetMode.Half;
                 g.DrawImage(frame, r);
-                using (var pen = new Pen(Color.FromArgb(70, 70, 80)))
+                using (var pen = new Pen(Theme.PreviewBorder))
                     g.DrawRectangle(pen, r.X - 1, r.Y - 1, r.Width + 1, r.Height + 1);
             });
             if (!drawn)
             {
-                string msg = source == null ? "Stopped. Press Start." : source.State;
-                TextRenderer.DrawText(g, msg, Font, preview.ClientRectangle, Color.Gray,
+                string msg = source == null ? Strings.StoppedPressStart : source.State;
+                TextRenderer.DrawText(g, msg, Font, preview.ClientRectangle, Theme.Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
             }
         }
@@ -229,7 +245,7 @@ namespace DslrWebcamStudio
 
         void StartVirtualCamera()
         {
-            if (!VirtualCamera.Supported) { vcamBtn.Visible = false; vcamError = "needs Windows 11"; return; }
+            if (!VirtualCamera.Supported) { vcamBtn.Visible = false; vcamError = Strings.VcamNeedsWindows11; return; }
             vcamBtn.Visible = !VirtualCamera.Installed;
             if (!VirtualCamera.Installed) return;
             VirtualCamera.WritePreferredFormat(settings);
@@ -239,22 +255,22 @@ namespace DslrWebcamStudio
         void InstallVirtualCamera()
         {
             vcamBtn.Enabled = false;
-            stateLabel.Text = "Installing the virtual camera (approve the Windows prompt)...";
-            bool ok = VirtualCamera.RunElevated("--install-vcam");
+            stateLabel.Text = Strings.VcamInstalling;
+            bool ok = VirtualCamera.RunElevated(VirtualCamera.InstallArg);
             vcamBtn.Enabled = true;
-            if (!ok || !VirtualCamera.Installed) { stateLabel.Text = "Virtual camera was not installed."; return; }
+            if (!ok || !VirtualCamera.Installed) { stateLabel.Text = Strings.VcamInstallFailed; return; }
             StartVirtualCamera();
-            stateLabel.Text = vcamError == null
-                ? "Virtual camera installed. Choose \"DSLR Webcam Studio\" as the camera in OBS, Streamlabs, Zoom or Teams."
-                : "Virtual camera: " + vcamError;
+            stateLabel.Text = vcamError == null ? Strings.VcamInstalled : Strings.VcamPrefix + vcamError;
         }
 
         void UpdateVirtualCameraStatus()
         {
-            if (vcamError != null) vcamLabel.Text = "Virtual camera: " + vcamError;
-            else if (!VirtualCamera.Running) vcamLabel.Text = "Virtual camera: not installed";
-            else vcamLabel.Text = vcamWriter.Connected ? "Virtual camera: ON (in use)" : "Virtual camera: ready";
+            string state = vcamError ?? (!VirtualCamera.Running ? Strings.VcamNotInstalled
+                                         : vcamWriter.Connected ? Strings.VcamInUse : Strings.VcamReady);
+            vcamLabel.Text = Strings.VcamPrefix + state;
         }
+
+        // ---- camera exposure -----------------------------------------------
 
         void SendCameraSetting(uint prop, ComboBox box)
         {
@@ -274,20 +290,11 @@ namespace DslrWebcamStudio
             {
                 isoBox.Enabled = ex != null && CameraValues.IsoSettable(ex.Mode);
                 shutterBox.Enabled = ex != null && CameraValues.ShutterSettable(ex.Mode);
-                if (ex != null)
-                {
-                    if (!isoBox.DroppedDown && ex.Iso.HasValue) SelectOrClear(isoBox, (int)ex.Iso.Value);
-                    if (!shutterBox.DroppedDown && ex.Shutter.HasValue) SelectOrClear(shutterBox, (int)ex.Shutter.Value);
-                }
+                if (ex == null) return;
+                if (!isoBox.DroppedDown && ex.Iso.HasValue) SelectOrClear(isoBox, (int)ex.Iso.Value);
+                if (!shutterBox.DroppedDown && ex.Shutter.HasValue) SelectOrClear(shutterBox, (int)ex.Shutter.Value);
             }
             finally { syncingCamera = false; }
-        }
-
-        static void SelectOrClear(ComboBox box, int value)
-        {
-            for (int i = 0; i < box.Items.Count; i++)
-                if (((Choice)box.Items[i]).Value == value) { if (box.SelectedIndex != i) box.SelectedIndex = i; return; }
-            box.SelectedIndex = -1; // camera is on a value the app does not list
         }
 
         void UpdateStatus()
@@ -296,34 +303,35 @@ namespace DslrWebcamStudio
             UpdateVirtualCameraStatus();
             if (source == null || engine == null)
             {
-                stateLabel.Text = "Stopped";
-                statsLabel.Text = "Output " + settings;
+                stateLabel.Text = Strings.Stopped;
+                statsLabel.Text = string.Format(Strings.OutputIdle, settings);
                 return;
             }
-            stateLabel.Text = (source.Model != "" ? source.Model + ": " : "") + source.State;
+            stateLabel.Text = source.Model != "" ? string.Format(Strings.ModelState, source.Model, source.State) : source.State;
             var canon = source as CanonSource;
             if (canon != null && canon.CommandError != null) stateLabel.Text = canon.CommandError;
             else if (canon != null && canon.Exposure != null && !CameraValues.IsoSettable(canon.Exposure.Mode))
-                stateLabel.Text += "  (turn the mode dial to M to set ISO/shutter)";
-            statsLabel.Text = string.Format("Output {0}x{1} @ {2} fps target, {3:F1} actual  |  camera {4:F1} fps  |  repeated {5}  dropped {6}",
-                settings.Width, settings.Height, settings.Fps, engine.OutputFps, source.Meter.Current, engine.Repeated, engine.Dropped);
+                stateLabel.Text += Strings.ModeDialHint;
+            statsLabel.Text = string.Format(Strings.OutputStats, settings.Width, settings.Height, settings.Fps,
+                engine.OutputFps, source.Meter.Current, engine.Repeated, engine.Dropped);
         }
+
+        // ---- snapshot & diagnostics ----------------------------------------
 
         void SaveSnapshot()
         {
             var eng = engine;
             if (eng == null) return;
             string dir = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
-            string path = Path.Combine(dir, "DSLRWebcam_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png");
+            string path = Path.Combine(dir, Strings.SnapshotFilePrefix + DateTime.Now.ToString(SnapshotTimeFormat) + ".png");
             if (eng.WithFrame(f => f.Save(path, ImageFormat.Png)))
-                stateLabel.Text = "Saved " + path;
+                stateLabel.Text = string.Format(Strings.SnapshotSaved, path);
         }
 
         void RunDiagnostics()
         {
-            diagBtn.Enabled = false;
-            startBtn.Enabled = false;
-            stateLabel.Text = "Running diagnostics (about 10 seconds)...";
+            diagBtn.Enabled = startBtn.Enabled = false;
+            stateLabel.Text = Strings.DiagRunning;
             var t = new Thread(() =>
             {
                 string report = Diagnostics.Run();
@@ -331,7 +339,7 @@ namespace DslrWebcamStudio
                 BeginInvoke((Action)(() =>
                 {
                     diagBtn.Enabled = startBtn.Enabled = true;
-                    stateLabel.Text = "Diagnostics saved to " + path;
+                    stateLabel.Text = string.Format(Strings.DiagSaved, path);
                     ShowReport(report, path);
                 }));
             }) { IsBackground = true };
@@ -340,12 +348,13 @@ namespace DslrWebcamStudio
 
         void ShowReport(string report, string path)
         {
-            using (var f = new Form { Text = "Diagnostics - " + path, ClientSize = new Size(760, 520), StartPosition = FormStartPosition.CenterParent })
+            using (var f = new Form { Text = string.Format(Strings.DiagWindowTitle, path), ClientSize = Theme.DiagnosticsSize,
+                                      StartPosition = FormStartPosition.CenterParent })
             {
                 var box = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, Dock = DockStyle.Fill,
-                                        Font = new Font("Consolas", 9f), Text = report.Replace("\n", "\r\n"), WordWrap = false };
-                var copy = new Button { Text = "Copy to clipboard", Dock = DockStyle.Bottom, Height = 32 };
-                copy.Click += delegate { Clipboard.SetText(report); copy.Text = "Copied"; };
+                                        Font = new Font(Theme.MonoFontName, Theme.FontSize), Text = report.Replace("\n", "\r\n"), WordWrap = false };
+                var copy = new Button { Text = Strings.CopyToClipboard, Dock = DockStyle.Bottom, Height = Theme.ButtonHeight + 4 };
+                copy.Click += delegate { Clipboard.SetText(report); copy.Text = Strings.Copied; };
                 f.Controls.Add(box);
                 f.Controls.Add(copy);
                 f.ShowDialog(this);
@@ -370,25 +379,18 @@ namespace DslrWebcamStudio
             public override string ToString() { return Text; }
         }
 
+        static Button MakeButton(string text, int width)
+        {
+            var b = new Button { Text = text, Width = width, Height = Theme.ButtonHeight, FlatStyle = FlatStyle.Flat,
+                                 BackColor = Theme.Button, Margin = new Padding(0, 0, 6, 6) };
+            b.FlatAppearance.BorderColor = Theme.ButtonBorder;
+            return b;
+        }
+
         static ComboBox Combo(int width)
         {
             return new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = width, Margin = new Padding(4, 1, 14, 6),
-                                  FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(52, 52, 58), ForeColor = Color.Gainsboro };
-        }
-
-        static Label Label(string text)
-        {
-            return new Label { Text = text, AutoSize = true, Margin = new Padding(0, 5, 0, 0) };
-        }
-
-        // Keeps a label and its control together when the toolbar wraps.
-        static Control Pair(string text, Control control)
-        {
-            var p = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-                                          Margin = Padding.Empty, Padding = Padding.Empty };
-            p.Controls.Add(Label(text));
-            p.Controls.Add(control);
-            return p;
+                                  FlatStyle = FlatStyle.Flat, BackColor = Theme.Input, ForeColor = Theme.Text };
         }
 
         static CheckBox Check(string text)
@@ -396,19 +398,36 @@ namespace DslrWebcamStudio
             return new CheckBox { Text = text, AutoSize = true, Margin = new Padding(0, 4, 14, 6) };
         }
 
-        public void SetFlip(bool h, bool v) { mirrorBox.Checked = h; flipBox.Checked = v; }
-
-        static void OpenUrl(string url)
+        // Keeps a label and its control together when the toolbar wraps.
+        static Control Pair(string text, Control control)
         {
-            try { System.Diagnostics.Process.Start(url); } catch (Exception) { }
+            var p = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+                                          Margin = Padding.Empty, Padding = Padding.Empty };
+            p.Controls.Add(new Label { Text = text, AutoSize = true, Margin = new Padding(0, 5, 0, 0) });
+            p.Controls.Add(control);
+            return p;
         }
 
         static Control Spacer() { return new Panel { Width = 12, Height = 1, Margin = Padding.Empty }; }
+
+        // Only the project's own https links are ever opened.
+        static void OpenUrl(string url)
+        {
+            if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
+            try { System.Diagnostics.Process.Start(url); } catch (System.ComponentModel.Win32Exception) { }
+        }
 
         static void Select(ComboBox box, int value)
         {
             for (int i = 0; i < box.Items.Count; i++)
                 if (((Choice)box.Items[i]).Value == value) { box.SelectedIndex = i; return; }
+        }
+
+        static void SelectOrClear(ComboBox box, int value)
+        {
+            for (int i = 0; i < box.Items.Count; i++)
+                if (((Choice)box.Items[i]).Value == value) { if (box.SelectedIndex != i) box.SelectedIndex = i; return; }
+            box.SelectedIndex = -1; // camera is on a value the app does not list
         }
 
         static int Value(ComboBox box) { return ((Choice)box.SelectedItem).Value; }
