@@ -8,7 +8,7 @@ CFLAGS  += -std=gnu11 -Wall -Wextra -Wno-unused-parameter -pthread \
            -DAPP_VERSION='"$(VERSION)"' -DDONATE_URL='"$(DONATE)"'
 LDLIBS  += $(shell pkg-config --libs $(PKGS)) -lm -pthread
 
-SRC := src/main.c src/ptp.c src/camera.c src/image.c src/engine.c src/selftest.c
+SRC := src/main.c src/ptp.c src/camera.c src/image.c src/engine.c src/vcam.c src/selftest.c
 BIN := dslr-webcam-studio
 
 $(BIN): $(SRC) $(wildcard src/*.h)

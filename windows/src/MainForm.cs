@@ -26,6 +26,10 @@ namespace DslrWebcamStudio
         readonly Button startBtn = new Button { Text = "Start", Width = 90, Height = 28 };
         readonly Button snapBtn = new Button { Text = "Snapshot", Width = 90, Height = 28 };
         readonly Button diagBtn = new Button { Text = "Diagnostics", Width = 100, Height = 28 };
+        readonly Button vcamBtn = new Button { Text = "Install virtual camera", Width = 170, Height = 28 };
+        readonly ToolStripStatusLabel vcamLabel = new ToolStripStatusLabel();
+        readonly VirtualCamera.Writer vcamWriter = new VirtualCamera.Writer();
+        string vcamError;
         readonly Button coffeeBtn = new Button { Text = "☕ Buy me a coffee", Width = 140, Height = 28 };
         readonly PreviewPanel preview = new PreviewPanel();
         readonly ToolStripStatusLabel stateLabel = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -86,6 +90,7 @@ namespace DslrWebcamStudio
             snapBtn.Click += delegate { SaveSnapshot(); };
             diagBtn.Click += delegate { RunDiagnostics(); };
             coffeeBtn.Click += delegate { OpenUrl(AppInfo.DonateUrl); };
+            vcamBtn.Click += delegate { InstallVirtualCamera(); };
             coffeeBtn.Visible = AppInfo.DonateConfigured;
 
             var bar = new FlowLayoutPanel
@@ -94,7 +99,7 @@ namespace DslrWebcamStudio
                 Padding = new Padding(8, 8, 8, 4), WrapContents = true, BackColor = Color.FromArgb(40, 40, 46),
             };
             bar.Controls.AddRange(new Control[] {
-                startBtn, snapBtn, diagBtn, coffeeBtn, Spacer(),
+                startBtn, snapBtn, diagBtn, vcamBtn, coffeeBtn, Spacer(),
                 Pair("Source", sourceBox),
                 Pair("Streaming Video Output Resolution", resBox),
                 Pair("Target Streaming Framerate", fpsBox),
@@ -105,7 +110,7 @@ namespace DslrWebcamStudio
                 Pair("Camera ISO", isoBox),
                 Pair("Shutter", shutterBox),
             });
-            foreach (Control c in new Control[] { startBtn, snapBtn, diagBtn, coffeeBtn })
+            foreach (Control c in new Control[] { startBtn, snapBtn, diagBtn, vcamBtn, coffeeBtn })
             {
                 var b = (Button)c;
                 b.FlatStyle = FlatStyle.Flat;
@@ -118,7 +123,7 @@ namespace DslrWebcamStudio
             coffeeBtn.ForeColor = Color.FromArgb(40, 30, 10);
 
             var status = new StatusStrip { BackColor = Color.FromArgb(40, 40, 46), ForeColor = Color.Gainsboro, SizingGrip = false };
-            status.Items.AddRange(new ToolStripItem[] { stateLabel, exposureLabel, statsLabel });
+            status.Items.AddRange(new ToolStripItem[] { stateLabel, vcamLabel, exposureLabel, statsLabel });
 
             preview.Dock = DockStyle.Fill;
             preview.Paint += OnPreviewPaint;
@@ -128,7 +133,7 @@ namespace DslrWebcamStudio
 
             statusTimer.Tick += delegate { UpdateStatus(); };
             statusTimer.Start();
-            Shown += delegate { StartStreaming(); };
+            Shown += delegate { StartVirtualCamera(); StartStreaming(); };
             UpdateStatus();
         }
 
@@ -148,6 +153,7 @@ namespace DslrWebcamStudio
         {
             engine = new OutputEngine(source, settings);
             engine.FrameReady += OnFrameReady;
+            engine.Sink = vcamWriter;
             engine.Start();
         }
 
@@ -168,6 +174,7 @@ namespace DslrWebcamStudio
             if (next.Equals(settings)) return;
             bool sameFormat = next.SameFormat(settings);
             settings = next;
+            VirtualCamera.WritePreferredFormat(settings);
             try { settings.Save(configPath); }
             catch (Exception e) { stateLabel.Text = "Could not save settings: " + e.Message; }
             if (engine != null && sameFormat)
@@ -218,6 +225,37 @@ namespace DslrWebcamStudio
             }
         }
 
+        // ---- virtual camera ------------------------------------------------
+
+        void StartVirtualCamera()
+        {
+            if (!VirtualCamera.Supported) { vcamBtn.Visible = false; vcamError = "needs Windows 11"; return; }
+            vcamBtn.Visible = !VirtualCamera.Installed;
+            if (!VirtualCamera.Installed) return;
+            VirtualCamera.WritePreferredFormat(settings);
+            vcamError = VirtualCamera.Start();
+        }
+
+        void InstallVirtualCamera()
+        {
+            vcamBtn.Enabled = false;
+            stateLabel.Text = "Installing the virtual camera (approve the Windows prompt)...";
+            bool ok = VirtualCamera.RunElevated("--install-vcam");
+            vcamBtn.Enabled = true;
+            if (!ok || !VirtualCamera.Installed) { stateLabel.Text = "Virtual camera was not installed."; return; }
+            StartVirtualCamera();
+            stateLabel.Text = vcamError == null
+                ? "Virtual camera installed. Choose \"DSLR Webcam Studio\" as the camera in OBS, Streamlabs, Zoom or Teams."
+                : "Virtual camera: " + vcamError;
+        }
+
+        void UpdateVirtualCameraStatus()
+        {
+            if (vcamError != null) vcamLabel.Text = "Virtual camera: " + vcamError;
+            else if (!VirtualCamera.Running) vcamLabel.Text = "Virtual camera: not installed";
+            else vcamLabel.Text = vcamWriter.Connected ? "Virtual camera: ON (in use)" : "Virtual camera: ready";
+        }
+
         void SendCameraSetting(uint prop, ComboBox box)
         {
             var cam = source as CanonSource;
@@ -255,6 +293,7 @@ namespace DslrWebcamStudio
         void UpdateStatus()
         {
             SyncCameraControls();
+            UpdateVirtualCameraStatus();
             if (source == null || engine == null)
             {
                 stateLabel.Text = "Stopped";
@@ -317,6 +356,8 @@ namespace DslrWebcamStudio
         {
             statusTimer.Stop();
             StopStreaming(); // returns the camera's live view to normal
+            VirtualCamera.Stop();
+            vcamWriter.Dispose();
             base.OnFormClosing(e);
         }
 

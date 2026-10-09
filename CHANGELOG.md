@@ -7,6 +7,8 @@ the current version is in [`VERSION`](VERSION).
 
 First public release for Windows, macOS and Linux.
 
+- **Virtual webcam "DSLR Webcam Studio"** for OBS, Streamlabs, Zoom, Teams, browsers etc.: Windows 11 (own Media
+  Foundation media source registered with Windows' virtual-camera API, one-time install) and Linux (v4l2loopback).
 - Live preview from Canon EOS cameras over USB. No Canon software or DLLs: the apps speak Canon's
   PTP live-view protocol directly.
 - **Streaming Video Output Resolution**: 640x360, 1280x720, 1920x1080.

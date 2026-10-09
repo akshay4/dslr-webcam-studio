@@ -414,6 +414,8 @@ struct engine {
     volatile gint stopping;
     void (*on_frame)(void *);
     void *ud;
+    void (*sink)(const frame_t *, void *);
+    void *sink_ud;
     scaler *sc;
     enhancer *en;
     GMutex stats_lock;
@@ -439,6 +441,12 @@ engine_t *engine_new(source_t *src, const settings_t *s, void (*on_frame)(void *
     e->sc = scaler_new();
     e->en = enhancer_new();
     return e;
+}
+
+void engine_set_sink(engine_t *e, void (*sink)(const frame_t *, void *), void *ud)
+{
+    e->sink = sink;
+    e->sink_ud = ud;
 }
 
 void engine_set_live(engine_t *e, const settings_t *s)
@@ -489,6 +497,11 @@ static gpointer engine_thread(gpointer p)
             g_mutex_lock(&e->stats_lock); e->repeated++; g_mutex_unlock(&e->stats_lock);
         }
         if (started) {
+            if (e->sink) {
+                g_mutex_lock(&e->front_lock);
+                e->sink(&e->front, e->sink_ud);
+                g_mutex_unlock(&e->front_lock);
+            }
             g_mutex_lock(&e->stats_lock);
             e->frames++;
             e->late = pacer.late;

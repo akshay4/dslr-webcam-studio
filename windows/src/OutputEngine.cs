@@ -31,6 +31,8 @@ namespace DslrWebcamStudio
         public double ComposeMs; // smoothed time to clean up and scale one frame
         public int LateTicks { get { return pacer == null ? 0 : pacer.LateTicks; } }
         public event Action FrameReady;
+        // Receives every sent frame (the virtual camera); called on the output thread.
+        public VirtualCamera.Writer Sink;
         // Read on every frame, so changing them takes effect without restarting the output.
         public volatile bool FlipHorizontal, FlipVertical;
         public volatile int NoiseReduction, Sharpness;
@@ -113,6 +115,8 @@ namespace DslrWebcamStudio
                 }
                 if (started)
                 {
+                    var sink = Sink;
+                    if (sink != null) lock (frontGate) { if (front != null) sink.Write(front, Settings.Fps); }
                     Frames++;
                     meter.Tick();
                     var h = FrameReady;

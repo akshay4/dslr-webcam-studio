@@ -16,6 +16,8 @@
 
 ## Features
 
+- **Works as a webcam** in OBS, Streamlabs, Zoom, Teams, Discord, browsers and more: it adds a camera called
+  **"DSLR Webcam Studio"** (Windows 11 and Linux; see [Use it as a webcam](#use-it-as-a-webcam)).
 - **Live preview** from a Canon EOS camera over USB. The app talks to the camera directly; no Canon
   drivers, DLLs or subscriptions.
 - **Streaming Video Output Resolution**: 640×360, 1280×720 or 1920×1080.
@@ -32,7 +34,7 @@ Get the file for your system from the [latest release](https://github.com/akshay
 
 | System | File | First launch |
 |---|---|---|
-| Windows 10/11 (64-bit) | `DSLR_Webcam_Studio-…-Windows-x64.exe` | Just run it (single ~90 KB file, nothing to install). If SmartScreen appears: **More info → Run anyway**. |
+| Windows 10/11 (64-bit) | `DSLR_Webcam_Studio-…-Windows-x64.exe` | Just run it (single ~280 KB file). If SmartScreen appears: **More info → Run anyway**. |
 | macOS 12+ (Apple silicon & Intel) | `DSLR_Webcam_Studio-…-macOS.zip` | Unzip, move to Applications, then **right-click → Open** the first time (the app is not notarized). |
 | Linux x86-64 | `DSLR_Webcam_Studio-…-x86_64.AppImage` | `chmod +x` it and run. For USB access without root, install [the udev rule](linux/60-dslr-webcam-studio.rules) once. |
 
@@ -42,6 +44,27 @@ Get the file for your system from the [latest release](https://github.com/akshay
 2. Set the mode dial to **M** (or P/Tv/Av, or movie mode) and make sure **Live View** is enabled in the camera menu.
 3. Start DSLR Webcam Studio. Live view starts automatically.
 4. Pick the resolution, framerate and image options. Settings are saved for next time.
+
+## Use it as a webcam
+
+**Windows 11:** click **Install virtual camera** in the app once and approve the Windows prompt. From then on, while
+DSLR Webcam Studio is running, pick **"DSLR Webcam Studio"** as the camera in OBS (*Video Capture Device*),
+Streamlabs, Zoom, Teams, Discord, Chrome/Edge or the Windows Camera app. The camera follows the app's output
+resolution, framerate, flips and image settings. Remove it with `DSLRWebcamStudio.exe --uninstall-vcam`.
+(Windows 10 lacks the virtual-camera API, so the app shows preview only there.)
+
+**Linux:** install v4l2loopback once, then start the app and pick "DSLR Webcam Studio" in your video app:
+
+```
+sudo apt install v4l2loopback-dkms          # Fedora: sudo dnf install v4l2loopback
+sudo modprobe v4l2loopback exclusive_caps=1 card_label="DSLR Webcam Studio"
+# keep it after reboot:
+echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
+echo 'options v4l2loopback exclusive_caps=1 card_label="DSLR Webcam Studio"' | sudo tee /etc/modprobe.d/v4l2loopback.conf
+```
+
+**macOS:** apps can only add cameras through a Camera Extension signed with a paid Apple Developer ID, so the macOS
+build currently offers preview only. A signed build with the virtual camera is planned.
 
 **For a clean picture:** in a dim room the camera's Auto ISO climbs high and the image gets grainy. Set the dial to
 **M**, choose **ISO 400–800** and **shutter 1/30–1/60** in the app, open the aperture as wide as your lens allows,
@@ -102,6 +125,13 @@ camera frame for the next one. Processing time therefore never shifts send times
   kernel widened when shrinking to avoid aliasing. Mirroring and flipping are done inside the scaler for free.
   All of this runs across CPU cores: about 4–6 ms per frame at 1080p.
 
+**Virtual camera.** On Windows 11 the app registers a camera with Windows' own virtual-camera API
+(`MFCreateVirtualCamera`). The camera is a small Media Foundation media source (`windows/vcam/vcam.cpp`, a 180 KB DLL
+embedded in the exe) that Windows' Camera Frame Server loads whenever an app opens the camera. Frame Server then
+shares it with every app at once and converts formats as needed (NV12, YUY2, RGB). The app hands each output frame to
+the media source through a shared-memory section with a sequence lock. When the app isn't sending, the camera
+shows a dark placeholder. On Linux the app writes YUYV frames to a v4l2loopback device.
+
 **Settings** live in `config.ini` (`[Global] StreamWidth / StreamHeight / StreamFps / FitMode / FlipHorizontal /
 FlipVertical / NoiseReduction / Sharpness`), in `%APPDATA%\DSLR Webcam Studio\` on Windows,
 `~/Library/Application Support/DSLR Webcam Studio/` on macOS and `~/.config/dslr-webcam-studio/` on Linux.
@@ -110,7 +140,7 @@ FlipVertical / NoiseReduction / Sharpness`), in `%APPDATA%\DSLR Webcam Studio\` 
 
 | Platform | Command | Needs |
 |---|---|---|
-| Windows | `powershell -ExecutionPolicy Bypass -File windows\build.ps1` | Nothing extra (uses the C# compiler that ships with Windows) |
+| Windows | `powershell -ExecutionPolicy Bypass -File windows\build.ps1` | Nothing to install: uses the C# compiler that ships with Windows, and downloads the portable Zig C++ toolchain for the virtual camera on first build |
 | macOS | `bash macos/build.sh` | Xcode command line tools |
 | Linux | `cd linux && make` (or `bash package-appimage.sh`) | `build-essential pkg-config libgtk-3-dev libusb-1.0-0-dev` |
 

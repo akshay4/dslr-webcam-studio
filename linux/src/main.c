@@ -8,6 +8,7 @@
 
 #include "camera.h"
 #include "engine.h"
+#include "vcam.h"
 
 #ifndef APP_VERSION
 #define APP_VERSION "dev"
@@ -24,7 +25,9 @@ typedef struct {
     GtkWidget *window, *preview, *start_btn, *diag_btn;
     GtkWidget *source_box, *res_box, *fps_box, *fit_box, *noise_box, *sharp_box, *iso_box, *shutter_box;
     GtkWidget *mirror_chk, *flip_chk;
-    GtkWidget *state_lbl, *exposure_lbl, *stats_lbl;
+    GtkWidget *state_lbl, *exposure_lbl, *stats_lbl, *vcam_lbl;
+    vcam *vc;
+    char vcam_msg[200];
     settings_t s;
     char *config;
     source_t *src;
@@ -54,9 +57,27 @@ static void on_frame(void *p) // output thread
     if (g_atomic_int_compare_and_exchange(&a->redraw_pending, 0, 1)) g_idle_add(redraw_idle, a);
 }
 
+static void vcam_sink(const frame_t *f, void *p) // output thread
+{
+    app_t *a = p;
+    if (a->vc) vcam_write(a->vc, f);
+}
+
+// (Re)opens the v4l2loopback device at the output size; called while no engine is running.
+static void open_vcam(app_t *a)
+{
+    vcam_close(a->vc);
+    char err[160];
+    a->vc = vcam_open(a->s.width, a->s.height, err, sizeof err);
+    if (a->vc) snprintf(a->vcam_msg, sizeof a->vcam_msg, "Virtual camera: ON (%s)", vcam_device(a->vc));
+    else snprintf(a->vcam_msg, sizeof a->vcam_msg, "Virtual camera: %s", err);
+}
+
 static void start_engine(app_t *a)
 {
+    open_vcam(a);
     a->eng = engine_new(a->src, &a->s, on_frame, a);
+    engine_set_sink(a->eng, vcam_sink, a);
     engine_start(a->eng);
 }
 
@@ -74,6 +95,8 @@ static void stop_streaming(app_t *a)
 {
     if (a->eng) { engine_stop(a->eng); a->eng = NULL; }
     if (a->src) { source_free(a->src); a->src = NULL; }
+    vcam_close(a->vc);
+    a->vc = NULL;
     gtk_button_set_label(GTK_BUTTON(a->start_btn), "Start");
     gtk_widget_set_sensitive(a->diag_btn, TRUE);
     gtk_widget_queue_draw(a->preview);
@@ -150,6 +173,7 @@ static gboolean on_tick(gpointer p)
 {
     app_t *a = p;
     char buf[512];
+    gtk_label_set_text(GTK_LABEL(a->vcam_lbl), a->eng ? a->vcam_msg : "");
     if (!a->src || !a->eng) {
         gtk_label_set_text(GTK_LABEL(a->state_lbl), "Stopped");
         gtk_label_set_text(GTK_LABEL(a->exposure_lbl), "");
@@ -438,9 +462,11 @@ static void build_ui(app_t *a)
     a->state_lbl = gtk_label_new("Stopped");
     a->exposure_lbl = gtk_label_new("");
     a->stats_lbl = gtk_label_new("");
+    a->vcam_lbl = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(a->state_lbl), PANGO_ELLIPSIZE_END);
     gtk_box_pack_start(GTK_BOX(status), a->state_lbl, TRUE, TRUE, 0);
     gtk_widget_set_halign(a->state_lbl, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(status), a->vcam_lbl, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(status), a->exposure_lbl, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(status), a->stats_lbl, FALSE, FALSE, 0);
 

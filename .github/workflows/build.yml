@@ -28,6 +28,14 @@ jobs:
           $p = Start-Process windows/bin/DSLRWebcamStudio.exe -ArgumentList '--selftest', $dir -Wait -PassThru
           Get-Content (Join-Path $dir 'selftest.txt')
           if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Virtual camera test
+        shell: pwsh
+        run: |
+          # Exercises the media source through Windows' IMFSourceReader (needs Media Foundation).
+          if (Test-Path "$env:WINDIR\System32\mfplat.dll") {
+            Push-Location windows/bin; ./test_vcam.exe ./DSLRWebcamStudioVCam.dll; $code = $LASTEXITCODE; Pop-Location
+            if ($code -ne 0) { exit 1 }
+          } else { "Media Foundation not installed on this runner; skipped." }
       - name: Package
         shell: pwsh
         run: |

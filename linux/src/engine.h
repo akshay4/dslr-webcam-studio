@@ -78,6 +78,8 @@ engine_t *engine_new(source_t *src, const settings_t *s, void (*on_frame)(void *
 void engine_start(engine_t *e);
 void engine_stop(engine_t *e);  // also frees
 void engine_set_live(engine_t *e, const settings_t *s); // flip / cleanup levels, applied in place
+// Receives every sent frame on the output thread (the virtual camera). Set before engine_start.
+void engine_set_sink(engine_t *e, void (*sink)(const frame_t *, void *), void *ud);
 // Calls fn on the frame most recently sent (under lock). Returns false if none yet.
 bool engine_with_frame(engine_t *e, void (*fn)(const frame_t *, void *), void *ud);
 void engine_stats(engine_t *e, double *out_fps, int *repeated, int *dropped, int *late, double *compose_ms);

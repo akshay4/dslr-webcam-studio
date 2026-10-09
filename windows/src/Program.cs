@@ -29,6 +29,8 @@ namespace DslrWebcamStudio
                 Console.WriteLine(path);
                 return 0;
             }
+            if (args.Length >= 1 && args[0] == "--install-vcam") return VirtualCamera.Install();
+            if (args.Length >= 1 && args[0] == "--uninstall-vcam") return VirtualCamera.Uninstall();
             if (args.Length >= 2 && args[0] == "--selftest")
                 return SelfTest.Run(args[1], args.Length >= 3 && args[2] == "camera");
 
