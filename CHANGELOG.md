@@ -3,6 +3,20 @@
 All notable changes to DSLR Webcam Studio. Versions follow [Semantic Versioning](https://semver.org/);
 the current version is in [`VERSION`](VERSION).
 
+## [1.1.0] - 2026-10-10
+
+**First macOS preview** (macOS 12+, Apple silicon and Intel). It hasn't been tested with a camera yet, so please
+try it and send a Diagnostics report either way. Windows is unchanged from 1.0.0.
+
+### macOS (preview)
+- Live preview from Canon EOS cameras over USB, with the same output, image and exposure controls as Windows.
+- **Virtual webcam** code for Teams, Google Meet, Zoom, OBS and FaceTime: a CoreMediaIO Camera Extension bundled in the
+  app, installed with **Install virtual camera** (needs a Developer ID-signed build; see the README).
+- Fixed: Stop and Quit froze the window for 4 seconds and left the camera in PC live-view mode.
+- Fixed: reconnecting after unplugging the camera took about 30 seconds.
+- Fixed: File > New Window started a second camera session; Start was available while Diagnostics used the camera.
+- Fixed: the ISO and shutter pickers went blank when the camera was set to a value outside the presets.
+
 ## [1.0.0] - 2026-10-09
 
 First public release, for Windows 10/11 (64-bit), as a single portable exe.

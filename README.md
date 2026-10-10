@@ -4,7 +4,7 @@
 
 <p align="center">
   Use your Canon EOS camera as a webcam: free, open source, no Canon software needed.<br>
-  Windows 10/11 · macOS and Linux coming later
+  Windows 10/11 · macOS preview · Linux coming later
 </p>
 
 <p align="center">
@@ -35,8 +35,13 @@
 with nothing to install; put it anywhere you like. If SmartScreen appears (the app isn't code-signed), click
 **More info → Run anyway**. Each release also has `SHA256SUMS.txt` for verifying the download.
 
-**macOS and Linux:** work in progress, coming in a later release. The source is in [`macos/`](macos) and
-[`linux/`](linux) and builds in CI, but it hasn't been tested with a camera yet.
+**macOS 12+ (preview):** download `DSLR_Webcam_Studio-<version>-macOS.zip`, unzip it and move the app to
+Applications. It isn't notarized, so the first time macOS blocks it: open it once, then go to *System Settings →
+Privacy & Security* and click **Open Anyway**. It hasn't been tested with a camera yet, and this build can't provide
+the virtual webcam (that needs a Developer ID-signed build; see [Use it as a webcam](#use-it-as-a-webcam)).
+
+**Linux:** work in progress. The source is in [`linux/`](linux) and builds in CI, but it hasn't been tested with a
+camera yet.
 
 ## Quick start
 
@@ -53,8 +58,13 @@ Streamlabs, Zoom, Teams, Discord, Chrome/Edge or the Windows Camera app. The cam
 resolution, framerate, flips and image settings. Remove it with `DSLRWebcamStudio.exe --uninstall-vcam`.
 (Windows 10 lacks the virtual-camera API, so the app shows preview only there.)
 
-**macOS / Linux (in progress):** Linux will use v4l2loopback (the code is in `linux/src/vcam.c`). On macOS a virtual
-camera needs a Camera Extension signed with a paid Apple Developer ID.
+**macOS (in progress, macOS 12.3+):** the app includes a camera extension. Move the app to **Applications**, click
+**Install virtual camera** and approve it in *System Settings → General → Login Items & Extensions → Camera
+Extensions*. Then pick **"DSLR Webcam Studio"** in Teams, Google Meet (Chrome/Safari/Edge), Zoom, OBS or FaceTime.
+Remove it with `"DSLR Webcam Studio.app/Contents/MacOS/DSLRWebcamStudio" --uninstall-vcam`. macOS only loads camera
+extensions signed with a paid Apple Developer ID, so this needs a signed build (see [Building from source](#building-from-source)).
+
+**Linux (in progress):** the app will use v4l2loopback (the code is in `linux/src/vcam.c`).
 
 **For a clean picture:** in a dim room the camera's Auto ISO climbs high and the image gets grainy. Set the dial to
 **M**, choose **ISO 400–800** and **shutter 1/30–1/60** in the app, open the aperture as wide as your lens allows,
@@ -121,7 +131,10 @@ copies it to `C:Program FilesDSLR Webcam Studio` (writable by administrators onl
 the shared frame buffer is accessible only to the logged-on user and the camera service. Frame Server then
 shares it with every app at once and converts formats as needed (NV12, YUY2, RGB). The app hands each output frame to
 the media source through a shared-memory section with a sequence lock. When the app isn't sending, the camera
-shows a dark placeholder. On Linux the app writes YUYV frames to a v4l2loopback device.
+shows a dark placeholder. On macOS the camera is a CoreMediaIO Camera Extension (`macos/Sources/DSLRWebcamStudioCamera`)
+bundled inside the app: it has a *sink* stream the app queues its output frames into (32BGRA IOSurface buffers) and a
+*source* stream that video apps read at a steady 30 fps, scaled to the size they ask for, with the same placeholder
+when the app isn't sending. On Linux the app writes YUYV frames to a v4l2loopback device.
 
 **Settings** live in `config.ini` (`[Global] StreamWidth / StreamHeight / StreamFps / FitMode / FlipHorizontal /
 FlipVertical / NoiseReduction / Sharpness`), in `%APPDATA%\DSLR Webcam Studio\` on Windows,
@@ -134,6 +147,13 @@ FlipVertical / NoiseReduction / Sharpness`), in `%APPDATA%\DSLR Webcam Studio\` 
 | Windows | `powershell -ExecutionPolicy Bypass -File windows\build.ps1` | Nothing to install: uses the C# compiler that ships with Windows, and downloads the portable Zig C++ toolchain for the virtual camera on first build |
 | macOS | `bash macos/build.sh` | Xcode command line tools |
 | Linux | `cd linux && make` (or `bash package-appimage.sh`) | `build-essential pkg-config libgtk-3-dev libusb-1.0-0-dev` |
+
+**macOS virtual camera:** a plain `bash macos/build.sh` signs the app ad-hoc, which runs everything except the
+virtual camera. For a build whose camera extension macOS will load, you need a paid Apple Developer Program team:
+create a *Developer ID Application* certificate and a Developer ID provisioning profile for
+`io.github.akshay4.dslrwebcamstudio` with the *System Extension* capability, then run
+`DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)" TEAM_ID=TEAMID APP_PROFILE=path/to/profile.provisionprofile bash macos/build.sh`.
+Add `NOTARY_PROFILE=<notarytool keychain profile>` to notarize the zip for distribution.
 
 Every app has a built-in test mode (`--selftest`) that checks settings, geometry, pacing, scaling, flips, noise
 reduction and protocol parsing; CI runs it on all three platforms. Windows also supports

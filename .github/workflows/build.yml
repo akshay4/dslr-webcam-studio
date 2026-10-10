@@ -1,7 +1,7 @@
 # Builds and self-tests the apps on every push. Pushing a tag like v1.0.0 publishes a GitHub
-# Release with the Windows app (one .exe) and its SHA-256 checksum, using the matching section
-# of CHANGELOG.md as release notes. macOS and Linux are work in progress: they are built and
-# tested here to keep the code healthy, but not attached to releases yet.
+# Release with the Windows app (one .exe), the macOS preview (.zip) and their SHA-256 checksums,
+# using the matching section of CHANGELOG.md as release notes. Linux is work in progress: it is
+# built and tested here to keep the code healthy, but not attached to releases yet.
 name: Build and release
 
 on:
@@ -50,22 +50,25 @@ jobs:
           New-Item -ItemType Directory dist | Out-Null
           $name = "DSLR_Webcam_Studio-$v-Windows-x64.exe"
           Copy-Item windows/bin/DSLRWebcamStudio.exe "dist/$name"
-          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
-          # LF line ending so "sha256sum -c SHA256SUMS.txt" works everywhere
-          [IO.File]::WriteAllText("dist/SHA256SUMS.txt", "$hash  $name`n")
-          Get-Content dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
           name: windows
           path: dist/*
 
-  # Work in progress: built and self-tested, not released yet.
+  # Preview: unsigned (ad-hoc), so the virtual camera is unavailable in release builds.
   macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+      - name: Check tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: test "v$(tr -d '[:space:]' < VERSION)" = "$GITHUB_REF_NAME" || { echo "Tag does not match VERSION"; exit 1; }
       - name: Build, self-test and package
         run: bash macos/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: macos/build/*.zip
 
   linux:
     runs-on: ubuntu-22.04
@@ -80,7 +83,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows]
+    needs: [windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +91,13 @@ jobs:
         with:
           name: windows
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+          path: dist
+      - name: Checksums
+        # LF line endings so "sha256sum -c SHA256SUMS.txt" works everywhere
+        run: cd dist && sha256sum DSLR_Webcam_Studio-* > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,8 +109,13 @@ jobs:
           ### Download
           **Windows 10/11 (64-bit):** download `DSLR_Webcam_Studio-*-Windows-x64.exe` below and run it. It's a
           single file with nothing to install. The virtual webcam needs Windows 11: click **Install virtual camera**
-          in the app once. `SHA256SUMS.txt` lets you verify the download.
+          in the app once.
 
-          macOS and Linux versions are in progress and will be released later.
+          **macOS 12+ (preview, Apple silicon and Intel):** download `DSLR_Webcam_Studio-*-macOS.zip`, unzip it
+          and move the app to Applications. It isn't notarized: the first time, open it, then click **Open Anyway**
+          in System Settings → Privacy & Security. Not yet tested with a camera, so please send a Diagnostics
+          report. The virtual webcam isn't available in this build (it needs an Apple Developer ID signature).
+
+          `SHA256SUMS.txt` lets you verify the downloads. Linux is in progress and will be released later.
           EOF
           gh release create "$GITHUB_REF_NAME" dist/* --title "DSLR Webcam Studio $GITHUB_REF_NAME" --notes-file notes.md --latest
