@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Builds "DSLR Webcam Studio.app" (universal: Apple silicon + Intel) and a zip for release.
 # Requires Xcode command line tools (swift, iconutil, codesign). Run on macOS.
+#
+# The virtual camera (a Camera Extension inside the app) only loads when the app is signed with an
+# Apple Developer ID from a paid Apple Developer Program team. Without these variables the app is
+# signed ad-hoc: everything works except the virtual camera.
+#   DEVELOPER_ID    codesign identity, e.g. "Developer ID Application: Your Name (TEAMID1234)"
+#   TEAM_ID         that team's ID, e.g. TEAMID1234
+#   APP_PROFILE     Developer ID provisioning profile for io.github.akshay4.dslrwebcamstudio
+#                   with the System Extension capability (needed for the install entitlement)
+#   EXT_PROFILE     optional profile for io.github.akshay4.dslrwebcamstudio.camera
+#   NOTARY_PROFILE  optional `xcrun notarytool store-credentials` profile name: notarize and staple
 set -euo pipefail
 cd "$(dirname "$0")"
 VERSION=$(cat ../VERSION)
@@ -19,13 +29,25 @@ enum AppInfo {
 EOF
 
 swift build -c release --arch arm64 --arch x86_64
-BIN=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/DSLRWebcamStudio
+BINDIR=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)
+BIN=$BINDIR/DSLRWebcamStudio
 "$BIN" --selftest
+
+SIGN=${DEVELOPER_ID:-}
+TEAM_ID=${TEAM_ID:-}
+if [[ -n "$SIGN" && -z "$TEAM_ID" ]]; then echo "DEVELOPER_ID is set: set TEAM_ID too." >&2; exit 1; fi
 
 APP="build/DSLR Webcam Studio.app"
 rm -rf build && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/DSLRWebcamStudio"
 sed "s/__VERSION__/$VERSION/g" Info.plist > "$APP/Contents/Info.plist"
+
+# Camera extension. Its mach service name must start with the signing team's ID; unsigned builds
+# get an UNSIGNED prefix, which the app checks to explain why the virtual camera isn't available.
+EXT="$APP/Contents/Library/SystemExtensions/io.github.akshay4.dslrwebcamstudio.camera.systemextension"
+mkdir -p "$EXT/Contents/MacOS"
+cp "$BINDIR/DSLRWebcamStudioCamera" "$EXT/Contents/MacOS/DSLRWebcamStudioCamera"
+sed -e "s/__VERSION__/$VERSION/g" -e "s/__TEAM_ID__/${TEAM_ID:-UNSIGNED}/g" CameraExtension-Info.plist > "$EXT/Contents/Info.plist"
 
 ICONSET=build/AppIcon.iconset
 mkdir -p "$ICONSET"
@@ -35,7 +57,28 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-# Ad-hoc signature: required for Apple silicon to launch it. Not notarized (see README for first launch).
-codesign --force --deep --sign - "$APP"
-(cd build && ditto -c -k --keepParent "DSLR Webcam Studio.app" "DSLR_Webcam_Studio-$VERSION-macOS.zip")
+# Sign inside-out: the extension first, then the app around it.
+if [[ -n "$SIGN" ]]; then
+    sed "s/__TEAM_ID__/$TEAM_ID/g" CameraExtension.entitlements > build/CameraExtension.entitlements
+    if [[ -n "${EXT_PROFILE:-}" ]]; then cp "$EXT_PROFILE" "$EXT/Contents/embedded.provisionprofile"; fi
+    if [[ -n "${APP_PROFILE:-}" ]]; then cp "$APP_PROFILE" "$APP/Contents/embedded.provisionprofile"; fi
+    codesign --force --options runtime --timestamp --entitlements build/CameraExtension.entitlements --sign "$SIGN" "$EXT"
+    codesign --force --options runtime --timestamp --entitlements App.entitlements --sign "$SIGN" "$APP"
+    codesign --verify --strict --deep --verbose=2 "$APP"
+else
+    # Ad-hoc signature: required for Apple silicon to launch it. No entitlements, since the
+    # restricted ones would stop an ad-hoc app from launching; the virtual camera stays unavailable.
+    echo "DEVELOPER_ID not set: signing ad-hoc. The virtual camera needs a Developer ID build (see the top of this file)."
+    codesign --force --sign - "$EXT"
+    codesign --force --sign - "$APP"
+fi
+
+ZIP="DSLR_Webcam_Studio-$VERSION-macOS.zip"
+(cd build && ditto -c -k --keepParent "DSLR Webcam Studio.app" "$ZIP")
+if [[ -n "$SIGN" && -n "${NOTARY_PROFILE:-}" ]]; then
+    xcrun notarytool submit "build/$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$APP"
+    rm "build/$ZIP"
+    (cd build && ditto -c -k --keepParent "DSLR Webcam Studio.app" "$ZIP")
+fi
 ls -la build/*.zip

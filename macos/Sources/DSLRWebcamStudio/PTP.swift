@@ -150,6 +150,13 @@ enum CameraValues {
         22: "A+ (Scene Intelligent Auto)",
     ]
 
+    // Picker entries: the presets plus the camera's current value when it is set to something else
+    // (e.g. ISO 1000 from the camera body), so the picker shows it instead of an invalid selection.
+    static func choices(_ presets: [(UInt32, String)], _ table: [UInt32: String], _ current: UInt32?) -> [(UInt32, String)] {
+        guard let c = current, !presets.contains(where: { $0.0 == c }) else { return presets }
+        return (presets + [(c, name(table, c))]).sorted { $0.0 < $1.0 }
+    }
+
     static func name(_ table: [UInt32: String], _ v: UInt32?) -> String {
         guard let v = v else { return "?" }
         return table[v] ?? String(format: "0x%X", v)

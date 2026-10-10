@@ -1,6 +1,9 @@
 // Built-in checks for the platform-independent logic (run in CI: --selftest), mirroring the
 // Windows and Linux self-tests, plus the camera diagnostics report.
+import CoreMedia
+import CoreVideo
 import Foundation
+import VCamShared
 
 enum SelfTest {
     private static var failures = 0
@@ -102,8 +105,51 @@ enum SelfTest {
         check(PTP.extractJPEG(vf).map(Array.init) == jpeg, "viewfinder block parse (type 1 = JPEG)")
         check(PTP.extractJPEG(jpeg).map(Array.init) == jpeg, "viewfinder bare JPEG fallback")
 
+        check(CameraValues.choices(CameraValues.isoChoices, CameraValues.iso, 0x58).count == CameraValues.isoChoices.count,
+              "picker: preset camera value not duplicated")
+        let isoList = CameraValues.choices(CameraValues.isoChoices, CameraValues.iso, 0x63)
+        check(isoList.count == CameraValues.isoChoices.count + 1 && isoList.contains { $0 == (0x63, "1000") }
+              && isoList.map(\.0) == isoList.map(\.0).sorted(), "picker: camera's ISO 1000 added in order")
+
+        let vf2 = Frame(w: 6, h: 4)
+        vf2.px[2 * 6 + 5] = 0xFF11_2233
+        if let pool = VCam.makePool(6, 4), let pb = VirtualCameraOutput.pixelBuffer(vf2, pool) {
+            CVPixelBufferLockBaseAddress(pb, .readOnly)
+            let row = CVPixelBufferGetBaseAddress(pb)! + 2 * CVPixelBufferGetBytesPerRow(pb)
+            let px = row.load(fromByteOffset: 5 * 4, as: UInt32.self)
+            CVPixelBufferUnlockBaseAddress(pb, .readOnly)
+            check(px == 0xFF11_2233 && CVPixelBufferGetPixelFormatType(pb) == kCVPixelFormatType_32BGRA
+                  && CVPixelBufferGetIOSurface(pb) != nil, "virtual camera: frame copied into a shareable BGRA buffer")
+            let sb = VCam.sampleBuffer(pb, at: VCam.hostNow())
+            check(sb.flatMap(CMSampleBufferGetImageBuffer).map { CVPixelBufferGetWidth($0) == 6 } ?? false, "virtual camera: sample buffer wraps the frame")
+        } else {
+            check(false, "virtual camera: pixel buffer pool")
+        }
+
+        // Camera I/O completes on the main run loop; stopping from the main thread must not stall it.
+        let hopSrc = MainHopSource()
+        hopSrc.start()
+        Thread.sleep(forTimeInterval: 0.1)
+        let stopStart = monoNow()
+        hopSrc.stop()
+        check(monoNow() - stopStart < 1 && hopSrc.closedCleanly, "source stop on main thread lets camera I/O finish")
+
         print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
         return failures == 0
+    }
+
+    // Stands in for CameraSource: every "PTP call" waits for a block on the main queue.
+    private final class MainHopSource: LiveSource {
+        private(set) var closedCleanly = false
+        private func hop() -> Bool {
+            let sem = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { sem.signal() }
+            return sem.wait(timeout: .now() + 2) == .success
+        }
+        override func run() {
+            while !stopping { _ = hop() }
+            closedCleanly = hop() && hop()
+        }
     }
 
     private static func stddevGreen(_ f: Frame) -> Double {

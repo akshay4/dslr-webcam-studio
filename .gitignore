@@ -16,3 +16,6 @@ linux/*.AppImage
 # Rendered icons are committed; the generator's exe is not
 tools/*.exe
 windows/.tools/
+
+# macOS Finder metadata
+.DS_Store

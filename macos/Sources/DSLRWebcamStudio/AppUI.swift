@@ -6,6 +6,7 @@ final class AppModel: ObservableObject {
     @Published var settings: StreamSettings { didSet { settingsChanged(oldValue) } }
     @Published var useTestPattern = false { didSet { if running { stop(); start() } } }
     @Published var running = false
+    @Published var diagnosing = false
     @Published var stateText = "Stopped"
     @Published var exposureText = ""
     @Published var statsText = ""
@@ -15,6 +16,8 @@ final class AppModel: ObservableObject {
     @Published var shutterEnabled = false
 
     let preview = PreviewNSView()
+    let vcam = VirtualCameraOutput()
+    private let installer = VirtualCameraInstaller()
     private var source: LiveSource?
     private var engine: OutputEngine?
     private var timer: Timer?
@@ -28,6 +31,7 @@ final class AppModel: ObservableObject {
     }
 
     func start() {
+        if running || diagnosing { return }
         let src: LiveSource = useTestPattern ? TestPatternSource() : CameraSource()
         source = src
         src.start()
@@ -38,6 +42,7 @@ final class AppModel: ObservableObject {
     func stop() {
         engine?.stop(); engine = nil
         source?.stop(); source = nil
+        vcam.stop()
         running = false
         preview.show(nil, message: "Stopped. Press Start.")
     }
@@ -46,6 +51,7 @@ final class AppModel: ObservableObject {
         guard let src = source else { return }
         let e = OutputEngine(source: src, settings: settings)
         e.onFrame = { [weak self] in self?.frameReady() }
+        e.onSend = { [vcam] f in vcam.send(f) }
         engine = e
         e.start()
     }
@@ -92,13 +98,27 @@ final class AppModel: ObservableObject {
         if (try? png.write(to: url)) != nil { stateText = "Saved \(url.path)" }
     }
 
+    func installVirtualCamera() {
+        if let why = VirtualCameraInstaller.unavailableReason {
+            let alert = NSAlert()
+            alert.messageText = "Virtual camera"
+            alert.informativeText = why
+            alert.runModal()
+            return
+        }
+        stateText = "Installing the virtual camera..."
+        installer.install { [weak self] msg in self?.stateText = msg }
+    }
+
     func diagnostics() {
         stop()
+        diagnosing = true
         stateText = "Running diagnostics (about 10 seconds)..."
         DispatchQueue.global().async {
             let report = Diagnostics.run()
             let url = Diagnostics.save(report)
             DispatchQueue.main.async {
+                self.diagnosing = false
                 self.stateText = "Diagnostics saved to \(url.path)"
                 let alert = NSAlert()
                 alert.messageText = "Diagnostics"
@@ -115,7 +135,8 @@ final class AppModel: ObservableObject {
 
     private func tick() {
         guard let src = source, let e = engine else {
-            stateText = stateText.hasPrefix("Saved") || stateText.hasPrefix("Diagnostics") || stateText.hasPrefix("Running") ? stateText : "Stopped"
+            stateText = ["Saved", "Diagnostics", "Running", "Virtual", "Could not", "Approve", "Installing", "Move"].contains { stateText.hasPrefix($0) }
+            ? stateText : "Stopped"
             statsText = "Output \(settings.width)x\(settings.height) @ \(settings.fps) fps"
             exposureText = ""
             isoEnabled = false; shutterEnabled = false
@@ -125,7 +146,9 @@ final class AppModel: ObservableObject {
         let isoOK = ex.map { CameraValues.isoSettable($0.mode) } ?? false
         var state = (src.model.isEmpty ? "" : src.model + ": ") + src.state
         if ex != nil && !isoOK { state += "  (turn the mode dial to M to set ISO/shutter)" }
-        if !stateText.hasPrefix("Saved") || src.state != "Live" { stateText = state }
+        if !["Saved", "Virtual", "Could not", "Approve", "Installing"].contains(where: { stateText.hasPrefix($0) }) || src.state != "Live" {
+            stateText = state
+        }
         if let ex = ex {
             exposureText = "\(CameraValues.name(CameraValues.modes, ex.mode))  |  ISO \(CameraValues.name(CameraValues.iso, ex.iso))  |  "
                 + "\(CameraValues.name(CameraValues.shutter, ex.shutter))  |  \(CameraValues.name(CameraValues.aperture, ex.aperture))"
@@ -139,6 +162,7 @@ final class AppModel: ObservableObject {
         shutterEnabled = ex.map { CameraValues.shutterSettable($0.mode) } ?? false
         statsText = String(format: "Output %dx%d @ %d fps target, %.1f actual  |  camera %.1f fps  |  repeated %d  dropped %d",
                            settings.width, settings.height, settings.fps, e.meter.current(), src.meter.current(), e.repeated, e.dropped)
+            + (vcam.connected ? "  |  virtual camera on" : "")
         if preview.isEmpty { preview.show(nil, message: src.state) }
     }
 }
@@ -197,8 +221,10 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     Button(model.running ? "Stop" : "Start") { model.running ? model.stop() : model.start() }
                         .keyboardShortcut(.space, modifiers: [])
+                        .disabled(model.diagnosing)
                     Button("Snapshot") { model.snapshot() }.disabled(!model.running)
-                    Button("Diagnostics") { model.diagnostics() }.disabled(model.running)
+                    Button("Diagnostics") { model.diagnostics() }.disabled(model.running || model.diagnosing)
+                    Button("Install virtual camera") { model.installVirtualCamera() }
                     if AppInfo.donateConfigured, let url = URL(string: AppInfo.donateURL) {
                         Link("\u{2615} Buy me a coffee", destination: url)
                     }
@@ -234,14 +260,14 @@ struct ContentView: View {
                     }.frame(width: 180)
                     Picker("Camera ISO", selection: Binding(get: { model.isoCode }, set: { model.setISO($0) })) {
                         Text("-").tag(UInt32?.none)
-                        ForEach(0..<CameraValues.isoChoices.count, id: \.self) { i in
-                            Text(CameraValues.isoChoices[i].1).tag(UInt32?.some(CameraValues.isoChoices[i].0))
+                        ForEach(CameraValues.choices(CameraValues.isoChoices, CameraValues.iso, model.isoCode), id: \.0) { c in
+                            Text(c.1).tag(UInt32?.some(c.0))
                         }
                     }.frame(width: 170).disabled(!model.isoEnabled)
                     Picker("Shutter", selection: Binding(get: { model.shutterCode }, set: { model.setShutter($0) })) {
                         Text("-").tag(UInt32?.none)
-                        ForEach(0..<CameraValues.shutterChoices.count, id: \.self) { i in
-                            Text(CameraValues.shutterChoices[i].1).tag(UInt32?.some(CameraValues.shutterChoices[i].0))
+                        ForEach(CameraValues.choices(CameraValues.shutterChoices, CameraValues.shutter, model.shutterCode), id: \.0) { c in
+                            Text(c.1).tag(UInt32?.some(c.0))
                         }
                     }.frame(width: 150).disabled(!model.shutterEnabled)
                 }
@@ -276,6 +302,8 @@ struct DSLRWebcamStudioApp: App {
                     model.stop() // returns the camera's live view to normal
                 }
         }
+        // One window only: the preview view and the camera can't be shared between windows.
+        .commands { CommandGroup(replacing: .newItem) {} }
     }
 }
 

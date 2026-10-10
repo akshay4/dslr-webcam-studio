@@ -3,28 +3,27 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>io.github.akshay4.dslrwebcamstudio</string>
+    <string>io.github.akshay4.dslrwebcamstudio.camera</string>
     <key>CFBundleName</key>
-    <string>DSLR Webcam Studio</string>
+    <string>DSLR Webcam Studio Camera</string>
     <key>CFBundleDisplayName</key>
     <string>DSLR Webcam Studio</string>
     <key>CFBundleExecutable</key>
-    <string>DSLRWebcamStudio</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
+    <string>DSLRWebcamStudioCamera</string>
     <key>CFBundlePackageType</key>
-    <string>APPL</string>
+    <string>SYSX</string>
     <key>CFBundleShortVersionString</key>
     <string>__VERSION__</string>
     <key>CFBundleVersion</key>
     <string>__VERSION__</string>
     <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
-    <key>LSApplicationCategoryType</key>
-    <string>public.app-category.video</string>
-    <key>NSCameraUsageDescription</key>
-    <string>DSLR Webcam Studio sends its picture to its own virtual camera, "DSLR Webcam Studio".</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
+    <string>12.3</string>
+    <key>CMIOExtension</key>
+    <dict>
+        <key>CMIOExtensionMachServiceName</key>
+        <string>__TEAM_ID__.io.github.akshay4.dslrwebcamstudio.camera</string>
+    </dict>
+    <key>NSSystemExtensionUsageDescription</key>
+    <string>Adds the "DSLR Webcam Studio" camera so video apps can use your Canon EOS camera.</string>
 </dict>
 </plist>

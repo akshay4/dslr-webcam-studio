@@ -153,7 +153,7 @@ class LiveSource {
     private var latest: Frame?
     private(set) var seqValue = 0
     private var thread: Thread?
-    fileprivate var stopping = false
+    private(set) var stopping = false
     let meter = RateMeter()
     private var _model = "", _state = "Stopped"
 
@@ -176,7 +176,12 @@ class LiveSource {
     func stop() {
         stopping = true
         let deadline = Date().addingTimeInterval(4)
-        while let t = thread, !t.isFinished, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        while let t = thread, !t.isFinished, Date() < deadline {
+            // Camera I/O completes on the main run loop, so keep it running while waiting there;
+            // sleeping would stall the camera thread until the deadline and skip its clean shutdown.
+            if Thread.isMainThread { RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02)) }
+            else { Thread.sleep(forTimeInterval: 0.02) }
+        }
         thread = nil
         lock.lock(); latest = nil; _state = "Stopped"; lock.unlock()
     }
@@ -278,6 +283,8 @@ final class OutputEngine {
     private(set) var repeated = 0, dropped = 0, frames = 0, late = 0
     private(set) var composeMs = 0.0
     var onFrame: (() -> Void)?
+    // Called on the output thread with each frame as it is sent (the virtual camera copies it here).
+    var onSend: ((Frame) -> Void)?
 
     init(source: LiveSource, settings: StreamSettings) {
         self.source = source
@@ -326,7 +333,8 @@ final class OutputEngine {
             if started { frames += 1; late = pacer.late }
             let opts = live
             lock.unlock()
-            if started { meter.tick(); onFrame?() }
+            // Only this thread swaps `front`, so it can be read here without the lock.
+            if started { onSend?(front); meter.tick(); onFrame?() }
 
             // 2. Prepare the next slot from the newest camera frame (or right away after an option change).
             let (frame, seq) = source.newest()

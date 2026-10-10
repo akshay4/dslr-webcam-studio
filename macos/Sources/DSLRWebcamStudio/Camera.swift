@@ -90,7 +90,8 @@ final class CanonCamera: NSObject, ICCameraDeviceDelegate {
         let di = try send(PTP.ocGetDeviceInfo, [])
         if di.code == PTP.rcOK, let parsed = PTP.parseDeviceInfo(di.data) {
             info = parsed
-            if !info.operations.contains(PTP.ocEosGetViewFinderData) {
+            for op in [PTP.ocEosSetRemoteMode, PTP.ocEosSetDevicePropValueEx, PTP.ocEosGetViewFinderData]
+            where !info.operations.contains(op) {
                 throw CameraError("\(info.model) does not support live view over USB.")
             }
         }
@@ -128,6 +129,15 @@ final class CanonCamera: NSObject, ICCameraDeviceDelegate {
         _ = sem.wait(timeout: .now() + 2)
     }
 
+    // Set once the camera is unplugged or stops answering, so the remaining calls (including
+    // close) fail at once instead of each waiting out the timeout before a reconnect.
+    private let goneLock = NSLock()
+    private var _gone = false
+    private var gone: Bool {
+        get { goneLock.lock(); defer { goneLock.unlock() }; return _gone }
+        set { goneLock.lock(); _gone = newValue; goneLock.unlock() }
+    }
+
     // ---- PTP plumbing ------------------------------------------------------------
 
     struct Response { let code: UInt16; let params: [UInt32]; let data: [UInt8] }
@@ -147,6 +157,7 @@ final class CanonCamera: NSObject, ICCameraDeviceDelegate {
     }
 
     private func send(_ code: UInt16, _ params: [UInt32], out: Data? = nil) throws -> Response {
+        if gone { throw CameraError("Camera disconnected.") }
         let t = tid
         tid &+= 1
         var cmd = PTP.le32(UInt32(12 + 4 * params.count)) + PTP.le16(1) + PTP.le16(code) + PTP.le32(t)
@@ -164,8 +175,8 @@ final class CanonCamera: NSObject, ICCameraDeviceDelegate {
                 sem.signal()
             }
         }
-        if sem.wait(timeout: .now() + 10) == .timedOut { throw CameraError("Camera did not respond.") }
-        if let e = err { throw CameraError("USB error: \(e.localizedDescription)") }
+        if sem.wait(timeout: .now() + 10) == .timedOut { gone = true; throw CameraError("Camera did not respond.") }
+        if let e = err { gone = true; throw CameraError("USB error: \(e.localizedDescription)") }
 
         let resp = [UInt8](respData)
         guard resp.count >= 8 else { throw CameraError("Short PTP response.") }
@@ -185,7 +196,7 @@ final class CanonCamera: NSObject, ICCameraDeviceDelegate {
 
     func device(_ device: ICDevice, didOpenSessionWithError error: Error?) { openError = error; openSignal.signal() }
     func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {}
-    func didRemove(_ device: ICDevice) {}
+    func didRemove(_ device: ICDevice) { gone = true }
     func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {}
     func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {}
     func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) {}
