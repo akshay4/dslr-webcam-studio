@@ -11,6 +11,9 @@
 #                   with the System Extension capability (needed for the install entitlement)
 #   EXT_PROFILE     optional profile for io.github.akshay4.dslrwebcamstudio.camera
 #   NOTARY_PROFILE  optional `xcrun notarytool store-credentials` profile name: notarize and staple
+#
+# Local install: INSTALL=1 also copies the app to /Applications (replacing an older copy), so it
+# shows in Launchpad and Spotlight, and adds a Dock shortcut (set DOCK=0 to skip the Dock).
 set -euo pipefail
 cd "$(dirname "$0")"
 VERSION=$(cat ../VERSION)
@@ -82,3 +85,21 @@ if [[ -n "$SIGN" && -n "${NOTARY_PROFILE:-}" ]]; then
     (cd build && ditto -c -k --keepParent "DSLR Webcam Studio.app" "$ZIP")
 fi
 ls -la build/*.zip
+
+if [[ "${INSTALL:-0}" == 1 ]]; then
+    DEST="/Applications/DSLR Webcam Studio.app"
+    # Quit a running copy first so the camera is released and the bundle can be replaced.
+    osascript -e 'tell application id "io.github.akshay4.dslrwebcamstudio" to quit' >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -f "$DEST/Contents/MacOS/" >/dev/null || break; sleep 0.5; done
+    rm -rf "$DEST"
+    ditto "$APP" "$DEST"
+    xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$DEST"
+    if [[ "${DOCK:-1}" == 1 ]] && ! defaults read com.apple.dock persistent-apps 2>/dev/null | grep -q "DSLR%20Webcam%20Studio.app"; then
+        defaults write com.apple.dock persistent-apps -array-add "<dict><key>tile-data</key><dict><key>file-data</key><dict>\
+<key>_CFURLString</key><string>file:///Applications/DSLR%20Webcam%20Studio.app/</string>\
+<key>_CFURLStringType</key><integer>15</integer></dict></dict></dict>"
+        killall Dock
+    fi
+    echo "Installed $DEST ($VERSION)$([[ "${DOCK:-1}" == 1 ]] && echo ', in the Dock')"
+fi

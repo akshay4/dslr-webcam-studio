@@ -154,7 +154,7 @@ FlipVertical / NoiseReduction / Sharpness`), in `%APPDATA%\DSLR Webcam Studio\` 
 | Platform | Command | Needs |
 |---|---|---|
 | Windows | `powershell -ExecutionPolicy Bypass -File windows\build.ps1` | Nothing to install: uses the C# compiler that ships with Windows, and downloads the portable Zig C++ toolchain for the virtual camera on first build |
-| macOS | `bash macos/build.sh` | Xcode command line tools |
+| macOS | `bash macos/build.sh` (add `INSTALL=1` to install it in Applications with a Dock shortcut) | Xcode command line tools |
 | Linux | `cd linux && make` (or `bash package-appimage.sh`) | `build-essential pkg-config libgtk-3-dev libusb-1.0-0-dev` |
 
 **macOS virtual camera:** a plain `bash macos/build.sh` signs the app ad-hoc, which runs everything except the
