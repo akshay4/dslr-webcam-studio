@@ -3,6 +3,13 @@
 All notable changes to DSLR Webcam Studio. Versions follow [Semantic Versioning](https://semver.org/);
 the current version is in [`VERSION`](VERSION).
 
+## [2.0.1] - 2026-10-13
+
+### Windows
+- The ISO and shutter pickers are hidden until the camera's mode dial allows setting them, instead of showing as
+  light-colored disabled boxes in the dark window.
+- The Fit / Fill explanation under Aspect is no longer cut off.
+
 ## [2.0.0] - 2026-10-13
 
 A redesigned app on Windows and macOS, and camera handling reworked on all platforms to match what Canon's own

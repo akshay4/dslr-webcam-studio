@@ -43,6 +43,7 @@ namespace DslrWebcamStudio
         readonly Label modeValue, isoValue, shutterValue, apertureValue, dialHint, fitHint;
         readonly Label vcamStatus, canonText;
         readonly Panel exposurePanel;
+        TableLayoutPanel pickers; // ISO and shutter: shown only when the camera's mode lets us set them
         readonly Card canonCard;
         readonly PillButton vcamBtn;
         readonly Panel inspector;
@@ -86,7 +87,8 @@ namespace DslrWebcamStudio
             shutterBox = Combo();
             modeValue = Value(); isoValue = Value(); shutterValue = Value(); apertureValue = Value();
             dialHint = Caption(Strings.ModeDialHintLong);
-            fitHint = Caption("");
+            // Sized for the longer hint so neither is clipped (the label's height is fixed when it is laid out).
+            fitHint = Caption(Strings.AspectFitHint.Length > Strings.AspectFillHint.Length ? Strings.AspectFitHint : Strings.AspectFillHint);
             vcamStatus = new Label { AutoSize = false, ForeColor = Theme.Text, Margin = Padding.Empty };
             canonText = Caption("");
             vcamBtn = new PillButton(Strings.InstallVirtualCamera, Theme.GlyphVideo, S(6)) { Size = S(new Size(Theme.CardWidth - 24, Theme.ButtonHeight)) };
@@ -198,7 +200,7 @@ namespace DslrWebcamStudio
             AddTile(exposurePanel, Strings.TileAperture, apertureValue, 1, 1);
             exposurePanel.Margin = S(new Padding(0, 10, 0, 0));
             camera.Controls.Add(exposurePanel);
-            var pickers = new TableLayoutPanel { ColumnCount = 2, RowCount = 2, Size = new Size(inner, S(52)), Margin = S(new Padding(0, 8, 0, 0)), BackColor = Theme.Card };
+            pickers = new TableLayoutPanel { Visible = false,  ColumnCount = 2, RowCount = 2, Size = new Size(inner, S(52)), Margin = S(new Padding(0, 8, 0, 0)), BackColor = Theme.Card };
             pickers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             pickers.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             pickers.RowStyles.Add(new RowStyle(SizeType.Absolute, S(20)));
@@ -643,6 +645,9 @@ namespace DslrWebcamStudio
             {
                 isoBox.Enabled = ex != null && CameraValues.IsoSettable(ex.Mode);
                 shutterBox.Enabled = ex != null && CameraValues.ShutterSettable(ex.Mode);
+                // Disabled combo boxes draw in light system colors, so hide them instead.
+                bool show = isoBox.Enabled || shutterBox.Enabled;
+                if (pickers.Visible != show) pickers.Visible = show;
                 if (ex == null) return;
                 if (!isoBox.DroppedDown && ex.Iso.HasValue) SelectOrClear(isoBox, (int)ex.Iso.Value);
                 if (!shutterBox.DroppedDown && ex.Shutter.HasValue) SelectOrClear(shutterBox, (int)ex.Shutter.Value);
