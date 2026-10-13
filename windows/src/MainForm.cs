@@ -294,11 +294,18 @@ namespace DslrWebcamStudio
             if (height == 0 && label != null)
             {
                 label.AutoSize = false;
-                label.Height = TextRenderer.MeasureText(label.Text.Length > 0 ? label.Text : " ", label.Font, new Size(width, 0), TextFormatFlags.WordBreak).Height;
+                WrapHeight(label);
             }
             else c.Height = height;
             if (c.Margin == new Padding(3)) c.Margin = Padding.Empty;
             parent.Controls.Add(c);
+        }
+
+        // Height the label needs to show all of its text, wrapped at its current width (as the Label draws it).
+        static void WrapHeight(Label l)
+        {
+            int h = l.GetPreferredSize(new Size(l.Width, 0)).Height;
+            if (l.Height != h) l.Height = h;
         }
 
         void AddTile(Panel panel, string name, Label value, int col, int row)
@@ -677,7 +684,7 @@ namespace DslrWebcamStudio
 
             var phase = CurrentPhase();
             bool warn = sourceSeg.SelectedIndex == SourceCanonIndex && canonRunning.Count > 0 && phase != Phase.Live;
-            if (warn) SetText(canonText, string.Format(Strings.CanonRunningCard, string.Join(", ", canonRunning)));
+            if (warn) { SetText(canonText, string.Format(Strings.CanonRunningCard, string.Join(", ", canonRunning))); WrapHeight(canonText); }
             if (canonCard.Visible != warn) canonCard.Visible = warn;
             SetText(fitHint, settings.Fit == FitMode.Fill ? Strings.AspectFillHint : Strings.AspectFitHint);
             snapBtn.Enabled = engine != null;

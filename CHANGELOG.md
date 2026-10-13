@@ -3,6 +3,12 @@
 All notable changes to DSLR Webcam Studio. Versions follow [Semantic Versioning](https://semver.org/);
 the current version is in [`VERSION`](VERSION).
 
+## [2.0.2] - 2026-10-13
+
+### Windows
+- Wrapped text in the settings panel (Aspect hint, Canon software warning, virtual camera note) is sized the way the
+  label draws it, so the last word or line is no longer cut off.
+
 ## [2.0.1] - 2026-10-13
 
 ### Windows
