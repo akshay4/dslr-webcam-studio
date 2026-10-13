@@ -3,6 +3,11 @@
 All notable changes to DSLR Webcam Studio. Versions follow [Semantic Versioning](https://semver.org/);
 the current version is in [`VERSION`](VERSION).
 
+## [2.0.3] - 2026-10-13
+
+### Windows
+- Shorter Fit explanation under Aspect, so it fits the settings panel without clipping.
+
 ## [2.0.2] - 2026-10-13
 
 ### Windows
