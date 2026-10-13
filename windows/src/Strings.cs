@@ -17,7 +17,7 @@ namespace DslrWebcamStudio
         public const string Aspect = "Aspect";
         public const string AspectFit = "Fit";
         public const string AspectFill = "Fill 16:9";
-        public const string AspectFitHint = "Shows the whole picture with black side bars.";
+        public const string AspectFitHint = "Shows the whole picture with side bars.";
         public const string AspectFillHint = "Crops the camera's 3:2 picture to fill the frame.";
         public const string Mirror = "Mirror left/right";
         public const string Flip = "Flip upside down";
