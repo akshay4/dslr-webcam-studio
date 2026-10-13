@@ -100,6 +100,25 @@ enum SelfTest {
         PTP.parseEvents(ev, into: &props)
         check(props.count == 1 && props[PTP.dpcISOSpeed] == 0x60 && CameraValues.name(CameraValues.iso, 0x60) == "800", "event parse: ISO 800")
 
+        var shut: [UInt8] = PTP.le32(8) + PTP.le32(PTP.ecWillSoonShutdown)
+        shut += PTP.le32(16) + PTP.le32(PTP.ecPropValueChanged) + PTP.le32(PTP.dpcEVFOutputDevice) + PTP.le32(1)
+        shut += PTP.le32(8) + PTP.le32(0)
+        var props2: [UInt32: UInt32] = [:]
+        check(PTP.parseEvents(shut, into: &props2) && props2[PTP.dpcEVFOutputDevice] == 1, "event parse: will-soon-shutdown flagged, EVF output read")
+        check(!PTP.parseEvents(ev, into: &props), "event parse: no shutdown warning in normal events")
+
+        var wd = PTP.Watchdog(now: 0)
+        check(wd.check(now: 1, evfOutput: PTP.evfPC) == .none, "watchdog: quiet while live view goes to the PC")
+        check(wd.check(now: 1.2, evfOutput: 1) == .restartEvf, "watchdog: camera switched live view to its screen -> restart")
+        check(wd.check(now: 1.5, evfOutput: 1) == .none, "watchdog: restarts are rate limited")
+        wd.frame(2)
+        check(wd.check(now: 4.9, evfOutput: PTP.evfPC) == .none, "watchdog: frames arriving -> nothing to do")
+        check(wd.check(now: 5.1, evfOutput: PTP.evfPC) == .restartEvf, "watchdog: no frames for 3 s -> restart live view")
+        check(wd.check(now: 6, evfOutput: PTP.evfPC) == .none, "watchdog: stalled restarts spaced 3 s apart")
+        check(wd.check(now: 14.1, evfOutput: PTP.evfPC) == .reconnect, "watchdog: no frames for 12 s -> reconnect")
+        check(PTP.viewFinderParams.first == [0x0010_0000] && PTP.viewFinderParams.last == [0, 0, 0], "viewfinder params: tested value first, Canon SDK value as fallback")
+        print("INFO Canon software running: " + (CanonSoftware.running().joined(separator: ", ").isEmpty ? "none" : CanonSoftware.running().joined(separator: ", ")))
+
         let jpeg: [UInt8] = [0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9]
         let vf = PTP.le32(12) + PTP.le32(5) + PTP.le32(0) + PTP.le32(UInt32(8 + jpeg.count)) + PTP.le32(1) + jpeg
         check(PTP.extractJPEG(vf).map(Array.init) == jpeg, "viewfinder block parse (type 1 = JPEG)")
@@ -185,6 +204,8 @@ enum Diagnostics {
         } catch {
             out += "  result: FAILED - \(error.localizedDescription)\n"
         }
+        let canon = CanonSoftware.running()
+        out += "Canon software running: " + (canon.isEmpty ? "none" : canon.joined(separator: ", ")) + "\n"
         return out
     }
 

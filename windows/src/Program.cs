@@ -179,6 +179,31 @@ namespace DslrWebcamStudio
                 var props = new Dictionary<uint, uint>();
                 CanonLiveView.ParseEvents(ev.ToArray(), props);
                 Check(props.Count == 1 && props[0xD103] == 0x60 && CameraValues.IsoName(0x60) == "800", "event parse: ISO 800");
+                Check(!CanonLiveView.ParseEvents(ev.ToArray(), props), "event parse: no shutdown warning in normal events");
+
+                var shut = new List<byte>();
+                shut.AddRange(BitConverter.GetBytes(8)); shut.AddRange(BitConverter.GetBytes(Ptp.EC_EOS_WillSoonShutdown));
+                shut.AddRange(BitConverter.GetBytes(16)); shut.AddRange(BitConverter.GetBytes(Ptp.EC_EOS_PropValueChanged));
+                shut.AddRange(BitConverter.GetBytes(Ptp.DPC_EOS_EVFOutputDevice)); shut.AddRange(BitConverter.GetBytes(1));
+                shut.AddRange(BitConverter.GetBytes(8)); shut.AddRange(BitConverter.GetBytes(0));
+                var props2 = new Dictionary<uint, uint>();
+                Check(CanonLiveView.ParseEvents(shut.ToArray(), props2) && props2[Ptp.DPC_EOS_EVFOutputDevice] == 1,
+                      "event parse: will-soon-shutdown flagged, EVF output read");
+            }
+
+            // Live view watchdog: restart live view the camera dropped, reconnect if it stays dark.
+            {
+                var wd = new LiveViewWatchdog(0);
+                Check(wd.Check(1, Ptp.EVF_OUTPUT_PC) == LiveViewWatchdog.Action.None, "watchdog: quiet while live view goes to the PC");
+                Check(wd.Check(1.2, 1) == LiveViewWatchdog.Action.RestartEvf, "watchdog: camera switched live view to its screen -> restart");
+                Check(wd.Check(1.5, 1) == LiveViewWatchdog.Action.None, "watchdog: restarts are rate limited");
+                wd.Frame(2);
+                Check(wd.Check(4.9, Ptp.EVF_OUTPUT_PC) == LiveViewWatchdog.Action.None, "watchdog: frames arriving -> nothing to do");
+                Check(wd.Check(5.1, Ptp.EVF_OUTPUT_PC) == LiveViewWatchdog.Action.RestartEvf, "watchdog: no frames for 3 s -> restart live view");
+                Check(wd.Check(6, Ptp.EVF_OUTPUT_PC) == LiveViewWatchdog.Action.None, "watchdog: stalled restarts spaced 3 s apart");
+                Check(wd.Check(14.1, Ptp.EVF_OUTPUT_PC) == LiveViewWatchdog.Action.Reconnect, "watchdog: no frames for 12 s -> reconnect");
+                Check(Ptp.ViewFinderParams[0][0] == 0x00100000 && Ptp.ViewFinderParams[1].Length == 3,
+                      "viewfinder params: tested value first, Canon SDK value as fallback");
             }
 
             // Untrusted camera data: truncated or lying length fields must fail cleanly, not overrun.

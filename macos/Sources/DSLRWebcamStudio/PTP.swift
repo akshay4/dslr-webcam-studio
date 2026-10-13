@@ -7,11 +7,26 @@ enum PTP {
     static let ocEosSetRemoteMode: UInt16 = 0x9114
     static let ocEosSetEventMode: UInt16 = 0x9115
     static let ocEosGetEvent: UInt16 = 0x9116
+    static let ocEosKeepDeviceOn: UInt16 = 0x911D
     static let ocEosGetViewFinderData: UInt16 = 0x9153
 
     static let rcOK: UInt16 = 0x2001
+    static let rcParameterNotSupported: UInt16 = 0x2006
     static let rcDeviceBusy: UInt16 = 0x2019
+    static let rcInvalidParameter: UInt16 = 0x201D
     static let rcCanonNotReady: UInt16 = 0xA102
+
+    // GetEvent record types: a property changed, and the camera is about to auto power off.
+    static let ecPropValueChanged: UInt32 = 0xC189
+    static let ecWillSoonShutdown: UInt32 = 0xC18D
+
+    // Canon's EDSDK retries remote/event mode while the camera answers DeviceBusy (10 tries).
+    static let busyRetries = 10
+    static let busyRetryDelay = 0.1
+
+    // GetViewFinderData parameters: libgphoto2's value (tested on the 700D), then the one Canon's
+    // EDSDK sends for PC output, used if a camera rejects the first.
+    static let viewFinderParams: [[UInt32]] = [[0x0010_0000], [0, 0, 0]]
 
     static let dpcAperture: UInt32 = 0xD101
     static let dpcShutterSpeed: UInt32 = 0xD102
@@ -20,6 +35,8 @@ enum PTP {
     static let dpcEVFOutputDevice: UInt32 = 0xD1B0
     static let dpcEVFMode: UInt32 = 0xD1B3
     static let evfOff: UInt32 = 0, evfPC: UInt32 = 2
+    // Output device bits that send live view to the computer (PC, and PC small on newer bodies).
+    static let evfToPCMask: UInt32 = 0x0A
 
     static func rcName(_ rc: UInt16) -> String {
         switch rc {
@@ -27,6 +44,7 @@ enum PTP {
         case 0x2002: return "GeneralError"
         case 0x2003: return "SessionNotOpen"
         case 0x2005: return "OperationNotSupported"
+        case 0x2006: return "ParameterNotSupported"
         case 0x2019: return "DeviceBusy"
         case 0x201D: return "InvalidParameter"
         case 0xA102: return "Canon NotReady"
@@ -61,13 +79,43 @@ enum PTP {
     }
 
     // Canon event data: [u32 size][u32 type][payload] records; 0xC189 = property changed [u32 prop][u32 value].
-    static func parseEvents(_ d: [UInt8], into props: inout [UInt32: UInt32]) {
-        var pos = 0
+    // Returns true if the camera warned it will soon power off (answer with KeepDeviceOn).
+    @discardableResult
+    static func parseEvents(_ d: [UInt8], into props: inout [UInt32: UInt32]) -> Bool {
+        var pos = 0, shutdownSoon = false
         while pos + 8 <= d.count {
             let size = Int(rd32(d, pos)), type = rd32(d, pos + 4)
             if size < 8 || pos + size > d.count || type == 0 { break }
-            if type == 0xC189 && size >= 16 { props[rd32(d, pos + 8)] = rd32(d, pos + 12) }
+            if type == ecPropValueChanged && size >= 16 { props[rd32(d, pos + 8)] = rd32(d, pos + 12) }
+            if type == ecWillSoonShutdown { shutdownSoon = true }
             pos += size
+        }
+        return shutdownSoon
+    }
+
+    // Keeps live view running the way Canon's own webcam service does: when the camera switches its
+    // live view away from the computer (Live View button, mode dial, menu), turn it back on; when
+    // frames stop arriving, re-assert the output device, and reconnect if that doesn't help.
+    struct Watchdog {
+        enum Action: Equatable { case none, restartEvf, reconnect }
+        static let restartAfter = 3.0, reconnectAfter = 12.0, minGap = 1.0
+        private var lastFrame: Double, lastRestart = -Double.infinity
+        private(set) var restarts = 0
+
+        init(now: Double) { lastFrame = now }
+
+        mutating func frame(_ now: Double) { lastFrame = now }
+
+        mutating func check(now: Double, evfOutput: UInt32?) -> Action {
+            if now - lastFrame >= Watchdog.reconnectAfter { return .reconnect }
+            let lostPC = evfOutput.map { $0 & PTP.evfToPCMask == 0 } ?? false
+            let stalled = now - lastFrame >= Watchdog.restartAfter
+            guard lostPC || stalled else { return .none }
+            let gap = lostPC ? Watchdog.minGap : Watchdog.restartAfter
+            guard now - lastRestart >= gap else { return .none }
+            lastRestart = now
+            restarts += 1
+            return .restartEvf
         }
     }
 
@@ -155,6 +203,13 @@ enum CameraValues {
     static func choices(_ presets: [(UInt32, String)], _ table: [UInt32: String], _ current: UInt32?) -> [(UInt32, String)] {
         guard let c = current, !presets.contains(where: { $0.0 == c }) else { return presets }
         return (presets + [(c, name(table, c))]).sorted { $0.0 < $1.0 }
+    }
+
+    // Without the explanation in parentheses, for tight spaces: "A+ (Scene Intelligent Auto)" -> "A+".
+    static func shortName(_ table: [UInt32: String], _ v: UInt32?) -> String {
+        let n = name(table, v)
+        guard let r = n.range(of: " (") else { return n }
+        return String(n[..<r.lowerBound])
     }
 
     static func name(_ table: [UInt32: String], _ v: UInt32?) -> String {

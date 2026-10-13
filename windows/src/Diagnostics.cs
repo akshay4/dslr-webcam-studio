@@ -1,6 +1,7 @@
 // Camera diagnostics report: what Windows sees, what the camera supports,
 // and a short live-view test. Saved as a text file the user can send back.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -24,7 +25,6 @@ namespace DslrWebcamStudio
         const string ResultOk = "  result: OK";
         const string ResultFailed = "  result: FAILED - {0}: {1}";
         const string FilePrefix = "diagnostics_", FileTime = "yyyyMMdd_HHmmss", FileExt = ".txt";
-        const string CanonServicePrefix = "EWC", CanonName = "EOS";
         const ushort FirstCanonOp = 0x9100;
         const double TestSeconds = 6;
 
@@ -35,10 +35,7 @@ namespace DslrWebcamStudio
             log(string.Format(Header, Strings.AppName, DateTime.Now));
             log(string.Format(AppLine, typeof(Diagnostics).Assembly.GetName().Version, Environment.OSVersion, Environment.Is64BitProcess));
 
-            string canonProcs = "";
-            foreach (var p in Process.GetProcesses())
-                if (p.ProcessName.StartsWith(CanonServicePrefix) || p.ProcessName.IndexOf(CanonName, StringComparison.OrdinalIgnoreCase) >= 0)
-                    canonProcs += p.ProcessName + " ";
+            string canonProcs = string.Join(" ", CanonSoftware.Running());
             log(string.Format(CanonProcesses, canonProcs == "" ? None : canonProcs));
 
             log("");
@@ -101,6 +98,38 @@ namespace DslrWebcamStudio
             string path = Path.Combine(dir, FilePrefix + DateTime.Now.ToString(FileTime) + FileExt);
             File.WriteAllText(path, report);
             return path;
+        }
+    }
+
+    // Canon's own apps (EOS Utility, EOS Webcam Utility and its EWC services) talk to the camera
+    // too and hold it while they run.
+    public static class CanonSoftware
+    {
+        const string ServicePrefix = "EWC", CanonName = "EOS";
+
+        public static List<string> Running()
+        {
+            var names = new List<string>();
+            foreach (var p in Process.GetProcesses())
+            {
+                try
+                {
+                    string n = p.ProcessName;
+                    if ((n.StartsWith(ServicePrefix) || n.IndexOf(CanonName, StringComparison.OrdinalIgnoreCase) >= 0) && !names.Contains(n))
+                        names.Add(n);
+                }
+                catch (InvalidOperationException) { } // exited meanwhile
+                finally { p.Dispose(); }
+            }
+            names.Sort();
+            return names;
+        }
+
+        // Appended to camera errors when Canon software may be the cause.
+        public static string Hint()
+        {
+            var r = Running();
+            return r.Count == 0 ? "" : string.Format(Strings.CanonSoftwareHint, string.Join(", ", r));
         }
     }
 }

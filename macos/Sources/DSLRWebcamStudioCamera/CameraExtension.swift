@@ -53,6 +53,9 @@ final class DeviceSource: NSObject, CMIOExtensionDeviceSource {
     private var latestAt = 0.0
     private var pools: [Int: CVPixelBufferPool] = [:]
     private var placeholders: [Int: CVPixelBuffer] = [:]
+    // The newest app frame scaled to the size a video app asked for: the output repeats frames
+    // (30 fps out, ~17-30 in), so each one is scaled once instead of on every tick.
+    private var scaled: (src: CVPixelBuffer, out: CVPixelBuffer)?
 
     override init() {
         super.init()
@@ -107,7 +110,10 @@ final class DeviceSource: NSObject, CMIOExtensionDeviceSource {
         let (w, h) = VCam.sizes[min(max(source.activeFormatIndex, 0), VCam.sizes.count - 1)]
         let now = VCam.hostNow()
         var frame: CVPixelBuffer?
-        if let l = latest, now.seconds - latestAt < VCam.staleSeconds { frame = fit(l, w, h) }
+        if let l = latest, now.seconds - latestAt < VCam.staleSeconds {
+            if let c = scaled, c.src === l, CVPixelBufferGetWidth(c.out) == w { frame = c.out }
+            else { frame = fit(l, w, h); scaled = frame.map { (l, $0) } }
+        }
         guard let pb = frame ?? placeholder(w, h), let sb = VCam.sampleBuffer(pb, at: now) else { return }
         sourceStream.send(sb, discontinuity: [], hostTimeInNanoseconds: UInt64(now.seconds * 1e9))
     }
@@ -132,6 +138,7 @@ final class DeviceSource: NSObject, CMIOExtensionDeviceSource {
             self.sinkTimer?.cancel(); self.sinkTimer = nil
             self.sinkClient = nil
             self.latest = nil
+            self.scaled = nil
         }
     }
 

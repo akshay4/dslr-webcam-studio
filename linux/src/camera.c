@@ -1,5 +1,7 @@
 // PTP over USB (still-image class, bulk endpoints) with libusb, plus the Canon EOS
 // live-view sequence: SetRemoteMode -> SetEventMode -> EVF output = PC -> GetViewFinderData.
+// Busy retries, KeepDeviceOn and restarting live view follow Canon's EOS Webcam Utility (EDSDK),
+// the same as the Windows and macOS apps.
 #include "camera.h"
 
 #include <libusb.h>
@@ -24,7 +26,8 @@ struct camera {
     bool session_open, live_view_on;
     ptp_devinfo devinfo;
     ptp_props props;
-    double last_event_poll;
+    double last_event_poll, last_keepalive;
+    int vf_params;        // 0: libgphoto2's GetViewFinderData parameter, 1: Canon EDSDK's
     uint8_t *rx;          // receive buffer
     size_t rx_cap;
 };
@@ -151,16 +154,56 @@ static uint16_t set_prop(camera *c, uint32_t prop, uint32_t value)
     return transaction(c, PTP_OC_EOS_SetDevicePropValueEx, NULL, 0, d, sizeof d, NULL, NULL, &resp) == 0 ? resp.code : 0;
 }
 
+static void sleep_us(long us)
+{
+    struct timespec ts = {us / 1000000, (us % 1000000) * 1000};
+    nanosleep(&ts, NULL);
+}
+
+// Retry while the camera answers DeviceBusy, as Canon's EDSDK does for remote/event mode.
+static uint16_t simple_retry(camera *c, uint16_t code, uint32_t p1, int np)
+{
+    uint16_t rc = simple(c, code, p1, np);
+    for (int i = 1; rc == PTP_RC_DeviceBusy && i < PTP_BUSY_RETRIES; i++) { sleep_us(PTP_BUSY_RETRY_US); rc = simple(c, code, p1, np); }
+    return rc;
+}
+
+static uint16_t set_prop_retry(camera *c, uint32_t prop, uint32_t value)
+{
+    uint16_t rc = set_prop(c, prop, value);
+    for (int i = 1; rc == PTP_RC_DeviceBusy && i < PTP_BUSY_RETRIES; i++) { sleep_us(PTP_BUSY_RETRY_US); rc = set_prop(c, prop, value); }
+    return rc;
+}
+
+// Sends live view to the computer. Remembers the value so a stale event from before the change
+// doesn't look like the camera switching it off again.
+static uint16_t set_evf_to_pc(camera *c)
+{
+    uint16_t rc = set_prop_retry(c, DPC_EOS_EVFOutputDevice, EVF_OUTPUT_PC);
+    if (rc == PTP_RC_OK) ptp_props_set(&c->props, DPC_EOS_EVFOutputDevice, EVF_OUTPUT_PC);
+    return rc;
+}
+
+// Resets the camera's auto power off timer (Canon's service answers the camera's "will soon shut
+// down" event this way; we also send it every minute).
+static void keep_awake(camera *c)
+{
+    c->last_keepalive = now_s();
+    if (c->devinfo.nops == 0 || ptp_devinfo_has_op(&c->devinfo, PTP_OC_EOS_KeepDeviceOn)) simple(c, PTP_OC_EOS_KeepDeviceOn, 0, 0);
+}
+
 // Canon queues property/state events after remote mode; reading them keeps the camera responsive.
 static void drain_events(camera *c)
 {
     uint8_t *data;
     size_t len;
     ptp_resp resp;
+    bool shutdown_soon = false;
     if (transaction(c, PTP_OC_EOS_GetEvent, NULL, 0, NULL, 0, &data, &len, &resp) == 0 && resp.code == PTP_RC_OK)
-        ptp_parse_events(data, len, &c->props);
+        shutdown_soon = ptp_parse_events(data, len, &c->props);
     free(data);
     c->last_event_poll = now_s();
+    if (shutdown_soon) keep_awake(c);
 }
 
 static bool find_endpoints(libusb_device *dev, int *iface, uint8_t *in, uint8_t *out, int *mpin, int *mpout)
@@ -247,23 +290,38 @@ camera *camera_open(char *err, size_t errlen)
         return NULL;
     }
 
-    if ((rc = simple(c, PTP_OC_EOS_SetRemoteMode, 1, 1)) != PTP_RC_OK ||
-        (rc = simple(c, PTP_OC_EOS_SetEventMode, 1, 1)) != PTP_RC_OK) {
+    if ((rc = simple_retry(c, PTP_OC_EOS_SetRemoteMode, 1, 1)) != PTP_RC_OK ||
+        (rc = simple_retry(c, PTP_OC_EOS_SetEventMode, 1, 1)) != PTP_RC_OK) {
         snprintf(err, errlen, "Camera refused remote mode: %s", ptp_rc_name(rc, tmp));
         camera_close(c);
         return NULL;
     }
     drain_events(c);
     set_prop(c, DPC_EOS_EVFMode, 1); // read-only on some bodies; ignore the result
-    if ((rc = set_prop(c, DPC_EOS_EVFOutputDevice, EVF_OUTPUT_PC)) != PTP_RC_OK) {
+    if ((rc = set_evf_to_pc(c)) != PTP_RC_OK) {
         snprintf(err, errlen, "Could not start live view: %s. Enable Live View in the camera menu and set the mode dial to P/Tv/Av/M or movie.",
                  ptp_rc_name(rc, tmp));
         camera_close(c);
         return NULL;
     }
     c->live_view_on = true;
+    c->last_keepalive = now_s();
     drain_events(c);
     return c;
+}
+
+int camera_restart_live_view(camera *c)
+{
+    set_prop(c, DPC_EOS_EVFMode, 1);
+    uint16_t rc = set_evf_to_pc(c);
+    drain_events(c);
+    return rc == PTP_RC_OK ? 0 : -1;
+}
+
+int64_t camera_evf_output(camera *c)
+{
+    uint32_t v;
+    return ptp_props_get(&c->props, DPC_EOS_EVFOutputDevice, &v) ? (int64_t)v : -1;
 }
 
 int camera_read_jpeg(camera *c, uint8_t **jpeg, size_t *len, char *err, size_t errlen)
@@ -271,13 +329,20 @@ int camera_read_jpeg(camera *c, uint8_t **jpeg, size_t *len, char *err, size_t e
     *jpeg = NULL;
     *len = 0;
     if (now_s() - c->last_event_poll > 0.5) drain_events(c);
+    if (now_s() - c->last_keepalive > PTP_KEEPALIVE_S) keep_awake(c);
     uint8_t *data;
     size_t n;
     ptp_resp resp;
-    uint32_t p = 0x00100000;
-    int r = transaction(c, PTP_OC_EOS_GetViewFinderData, &p, 1, NULL, 0, &data, &n, &resp);
+    // libgphoto2's parameter (tested on the 700D), then the one Canon's EDSDK sends for PC output.
+    static const uint32_t params[2][3] = {{0x00100000, 0, 0}, {0, 0, 0}};
+    int r = transaction(c, PTP_OC_EOS_GetViewFinderData, params[c->vf_params], c->vf_params ? 3 : 1, NULL, 0, &data, &n, &resp);
     if (r) { snprintf(err, errlen, "USB error: %s", libusb_strerror(r)); return -1; }
     if (resp.code == PTP_RC_CANON_NotReady || resp.code == PTP_RC_DeviceBusy) { free(data); return 0; }
+    if ((resp.code == PTP_RC_InvalidParameter || resp.code == PTP_RC_ParameterNotSupported) && c->vf_params == 0) {
+        c->vf_params = 1;
+        free(data);
+        return 0;
+    }
     if (resp.code != PTP_RC_OK) {
         char tmp[16];
         snprintf(err, errlen, "GetViewFinderData failed: %s", ptp_rc_name(resp.code, tmp));
@@ -307,9 +372,9 @@ void camera_close(camera *c)
 {
     if (!c) return;
     if (c->h && c->session_open) {
-        if (c->live_view_on) set_prop(c, DPC_EOS_EVFOutputDevice, EVF_OUTPUT_OFF);
-        simple(c, PTP_OC_EOS_SetEventMode, 0, 1);
-        simple(c, PTP_OC_EOS_SetRemoteMode, 0, 1);
+        if (c->live_view_on) set_prop_retry(c, DPC_EOS_EVFOutputDevice, EVF_OUTPUT_OFF);
+        simple_retry(c, PTP_OC_EOS_SetEventMode, 0, 1);
+        simple_retry(c, PTP_OC_EOS_SetRemoteMode, 0, 1);
         simple(c, PTP_OC_CloseSession, 0, 0);
     }
     if (c->h) {

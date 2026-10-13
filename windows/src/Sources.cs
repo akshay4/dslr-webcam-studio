@@ -149,6 +149,8 @@ namespace DslrWebcamStudio
                     State = Strings.Live;
                     UpdateExposure(lv);
                     var lastExposure = DateTime.UtcNow;
+                    var clock = SystemClock.Instance;
+                    var watchdog = new LiveViewWatchdog(clock.Now);
                     while (!Stopping)
                     {
                         if (!requests.IsEmpty) { ApplyRequests(lv); UpdateExposure(lv); }
@@ -157,16 +159,30 @@ namespace DslrWebcamStudio
                             UpdateExposure(lv); // dial or settings changed on the camera itself
                             lastExposure = DateTime.UtcNow;
                         }
+                        switch (watchdog.Check(clock.Now, lv.EvfOutput))
+                        {
+                            case LiveViewWatchdog.Action.RestartEvf:
+                                State = Strings.WaitingForLiveView;
+                                lv.RestartLiveView();
+                                break;
+                            case LiveViewWatchdog.Action.Reconnect:
+                                throw new InvalidOperationException(Strings.NoLiveViewPicture);
+                        }
                         var jpeg = lv.ReadJpeg();
                         if (jpeg == null) { Thread.Sleep(Timing.CameraPollIdleMs); continue; }
                         var frame = Decode(jpeg);
-                        if (frame != null) Publish(frame);
+                        if (frame != null)
+                        {
+                            if (State == Strings.WaitingForLiveView) State = Strings.Live;
+                            watchdog.Frame(clock.Now);
+                            Publish(frame);
+                        }
                     }
                 }
                 catch (Exception e) // any camera/USB failure: report it and reconnect
                 {
                     Faulted = true;
-                    State = string.Format(Strings.CameraErrorRetrying, e.Message);
+                    State = string.Format(Strings.CameraErrorRetrying, e.Message + CanonSoftware.Hint());
                 }
                 finally
                 {

@@ -157,7 +157,30 @@ int run_selftest(void)
     char tmp[16];
     check(props.count == 1 && ptp_props_get(&props, DPC_EOS_ISOSpeed, &iso) && iso == 0x60 &&
           strcmp(canon_iso_name(iso, tmp), "800") == 0, "event parse: ISO 800");
+    check(!ptp_parse_events(ev->data, ev->len, &props), "event parse: no shutdown warning in normal events");
     g_byte_array_free(ev, TRUE);
+
+    GByteArray *shut = g_byte_array_new();
+    append32(shut, 8); append32(shut, PTP_EC_EOS_WillSoonShutdown);
+    append32(shut, 16); append32(shut, PTP_EC_EOS_PropValueChanged); append32(shut, DPC_EOS_EVFOutputDevice); append32(shut, 1);
+    append32(shut, 8); append32(shut, 0);
+    ptp_props props2 = {0};
+    uint32_t evf = 0;
+    check(ptp_parse_events(shut->data, shut->len, &props2) && ptp_props_get(&props2, DPC_EOS_EVFOutputDevice, &evf) && evf == 1,
+          "event parse: will-soon-shutdown flagged, EVF output read");
+    g_byte_array_free(shut, TRUE);
+
+    // Live view watchdog (same cases as the Windows and macOS self-tests).
+    lv_watchdog wd;
+    watchdog_init(&wd, 0);
+    check(watchdog_check(&wd, 1, EVF_OUTPUT_PC) == WATCHDOG_NONE, "watchdog: quiet while live view goes to the PC");
+    check(watchdog_check(&wd, 1.2, 1) == WATCHDOG_RESTART_EVF, "watchdog: camera switched live view to its screen -> restart");
+    check(watchdog_check(&wd, 1.5, 1) == WATCHDOG_NONE, "watchdog: restarts are rate limited");
+    watchdog_frame(&wd, 2);
+    check(watchdog_check(&wd, 4.9, EVF_OUTPUT_PC) == WATCHDOG_NONE, "watchdog: frames arriving -> nothing to do");
+    check(watchdog_check(&wd, 5.1, EVF_OUTPUT_PC) == WATCHDOG_RESTART_EVF, "watchdog: no frames for 3 s -> restart live view");
+    check(watchdog_check(&wd, 6, EVF_OUTPUT_PC) == WATCHDOG_NONE, "watchdog: stalled restarts spaced 3 s apart");
+    check(watchdog_check(&wd, 14.1, EVF_OUTPUT_PC) == WATCHDOG_RECONNECT, "watchdog: no frames for 12 s -> reconnect");
 
     const uint8_t jpeg[] = {0xFF, 0xD8, 1, 2, 3, 0xFF, 0xD9};
     GByteArray *vf = g_byte_array_new();

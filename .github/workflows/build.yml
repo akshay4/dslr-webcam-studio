@@ -35,6 +35,12 @@ jobs:
           $p = Start-Process windows/bin/DSLRWebcamStudio.exe -ArgumentList '--selftest', $dir -Wait -PassThru
           Get-Content (Join-Path $dir 'selftest.txt')
           if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Keep self-test output (report and ui.png window screenshot)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-selftest
+          path: ${{ runner.temp }}/selftest
       - name: Virtual camera test
         shell: pwsh
         run: |

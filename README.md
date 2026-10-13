@@ -20,8 +20,8 @@
   **"DSLR Webcam Studio"** (Windows 11; see [Use it as a webcam](#use-it-as-a-webcam)).
 - **Live preview** from a Canon EOS camera over USB. The app talks to the camera directly; no Canon
   drivers, DLLs or subscriptions.
-- **Streaming Video Output Resolution**: 640×360, 1280×720 or 1920×1080.
-- **Target Streaming Framerate**: 15, 24, 25 or 30 fps, held exactly (see [How it works](#how-it-works)).
+- **Output resolution**: 640×360, 1280×720 or 1920×1080.
+- **Frame rate**: 15, 24, 25 or 30 fps, held exactly (see [How it works](#how-it-works)).
 - **Fit or Fill**: show the camera's 3:2 picture with side bars, or crop it to 16:9.
 - **Mirror** left/right and **flip** upside-down.
 - **Noise reduction** and **sharpness**: four levels each, cleans up grainy low-light video.
@@ -37,7 +37,7 @@ with nothing to install; put it anywhere you like. If SmartScreen appears (the a
 
 **macOS 12+ (preview):** download `DSLR_Webcam_Studio-<version>-macOS.zip`, unzip it and move the app to
 Applications. It isn't notarized, so the first time macOS blocks it: open it once, then go to *System Settings →
-Privacy & Security* and click **Open Anyway**. It hasn't been tested with a camera yet, and this build can't provide
+Privacy & Security* and click **Open Anyway**. Tested with a Canon EOS 700D. This build can't provide
 the virtual webcam (that needs a Developer ID-signed build; see [Use it as a webcam](#use-it-as-a-webcam)).
 
 **Linux:** work in progress. The source is in [`linux/`](linux) and builds in CI, but it hasn't been tested with a
@@ -48,7 +48,7 @@ camera yet.
 1. Connect the camera with its USB cable and switch it on.
 2. Set the mode dial to **M** (or P/Tv/Av, or movie mode) and make sure **Live View** is enabled in the camera menu.
 3. Start DSLR Webcam Studio. Live view starts automatically.
-4. Pick the resolution, framerate and image options. Settings are saved for next time.
+4. Pick the resolution, frame rate and image options in the panel on the right. Settings are saved for next time.
 
 ## Use it as a webcam
 
@@ -70,17 +70,19 @@ extensions signed with a paid Apple Developer ID, so this needs a signed build (
 **M**, choose **ISO 400–800** and **shutter 1/30–1/60** in the app, open the aperture as wide as your lens allows,
 and keep **Noise reduction** on Medium. More light on your face helps most of all.
 
-**If it doesn't connect:** close Canon EOS Utility / EOS Webcam Utility (they hold the camera), then press **Diagnostics** and include the report
-when you [open an issue](https://github.com/akshay4/dslr-webcam-studio/issues).
+**If it doesn't connect:** close Canon EOS Utility / EOS Webcam Utility (they hold the camera); the status line says
+when one of them is running. On macOS, EOS Webcam Utility also installs a background service that starts at login and
+grabs any Canon camera: use **Camera > Pause Canon webcam service** (the app restores it when you quit). If it still
+fails, press **Diagnostics** and include the report when you [open an issue](https://github.com/akshay4/dslr-webcam-studio/issues).
 
 ## Supported cameras
 
 Canon EOS DSLR and mirrorless bodies that support live view over USB (roughly 2009 onward) use the same protocol
 and should work. Tested so far:
 
-| Camera | Result on Windows |
-|---|---|
-| EOS 700D / Rebel T5i / Kiss X7i | ✅ 960×640 live view, ~17 fps, ISO/shutter control, virtual webcam |
+| Camera | Windows | macOS |
+|---|---|---|
+| EOS 700D / Rebel T5i / Kiss X7i | ✅ 960×640 live view, ~17 fps, ISO/shutter control, virtual webcam | ✅ 960×640 live view, ~17 fps |
 
 Tested your camera? Please open an issue with your Diagnostics report and this table will be updated.
 
@@ -96,7 +98,14 @@ app sends the same sequence: `SetRemoteMode (0x9114)` → `SetEventMode (0x9115)
 (0xD1B0)` to *PC* with `SetDevicePropValueEx (0x9110)` → poll `GetViewFinderData (0x9153)`, which returns a JPEG
 frame (or *not ready*). `GetEvent (0x9116)` is polled every 0.5 s; besides keeping the camera responsive, it reports
 property changes, which is how the app knows the current mode, ISO, shutter and aperture. These are the same public
-opcodes used by [libgphoto2](https://github.com/gphoto/libgphoto2). Each platform uses its native USB path:
+opcodes used by [libgphoto2](https://github.com/gphoto/libgphoto2) and by Canon's own SDK.
+
+The session is kept healthy the way Canon's EOS Webcam Utility does it (its EDSDK camera layer was studied for
+this; no Canon code is used): remote mode, event mode and the live view output are retried while the camera
+answers *busy*; the camera's *will soon shut down* event (0xC18D) is answered with `KeepDeviceOn (0x911D)`, which
+is also sent every minute; and if the camera switches live view away from the computer (Live View button, mode
+dial) or no frame arrives for 3 s, the app turns live view back on, reconnecting after 12 s without a picture.
+Each platform uses its native USB path:
 
 | Platform | Language / UI | Camera transport |
 |---|---|---|

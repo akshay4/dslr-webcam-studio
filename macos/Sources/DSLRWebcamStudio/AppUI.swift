@@ -1,175 +1,13 @@
-// SwiftUI window: live preview, output settings, image cleanup and camera exposure controls.
+// SwiftUI window: the live preview on the left, an inspector with camera, output, image and
+// virtual camera settings on the right, and Start / Snapshot / Diagnostics in the toolbar.
 import AppKit
 import SwiftUI
 
-final class AppModel: ObservableObject {
-    @Published var settings: StreamSettings { didSet { settingsChanged(oldValue) } }
-    @Published var useTestPattern = false { didSet { if running { stop(); start() } } }
-    @Published var running = false
-    @Published var diagnosing = false
-    @Published var stateText = "Stopped"
-    @Published var exposureText = ""
-    @Published var statsText = ""
-    @Published var isoCode: UInt32? = nil
-    @Published var shutterCode: UInt32? = nil
-    @Published var isoEnabled = false
-    @Published var shutterEnabled = false
+// ---- preview ----------------------------------------------------------------------------------
 
-    let preview = PreviewNSView()
-    let vcam = VirtualCameraOutput()
-    private let installer = VirtualCameraInstaller()
-    private var source: LiveSource?
-    private var engine: OutputEngine?
-    private var timer: Timer?
-    private var redrawPending = false
-    private let redrawLock = NSLock()
-    private var syncing = false
-
-    init() {
-        settings = StreamSettings.load(StreamSettings.defaultPath)
-        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.tick() }
-    }
-
-    func start() {
-        if running || diagnosing { return }
-        let src: LiveSource = useTestPattern ? TestPatternSource() : CameraSource()
-        source = src
-        src.start()
-        startEngine()
-        running = true
-    }
-
-    func stop() {
-        engine?.stop(); engine = nil
-        source?.stop(); source = nil
-        vcam.stop()
-        running = false
-        preview.show(nil, message: "Stopped. Press Start.")
-    }
-
-    private func startEngine() {
-        guard let src = source else { return }
-        let e = OutputEngine(source: src, settings: settings)
-        e.onFrame = { [weak self] in self?.frameReady() }
-        e.onSend = { [vcam] f in vcam.send(f) }
-        engine = e
-        e.start()
-    }
-
-    private func settingsChanged(_ old: StreamSettings) {
-        if old == settings { return }
-        settings.save(StreamSettings.defaultPath)
-        guard let e = engine else { return }
-        if settings.sameFormat(old) { e.setLive(settings) } // flip / cleanup change in place
-        else { e.stop(); startEngine() }
-    }
-
-    private func frameReady() { // output thread
-        redrawLock.lock()
-        let schedule = !redrawPending
-        redrawPending = true
-        redrawLock.unlock()
-        if !schedule { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.redrawLock.lock(); self.redrawPending = false; self.redrawLock.unlock()
-            if let f = self.engine?.currentFrame() { self.preview.show(f.cgImage(), message: nil) }
-        }
-    }
-
-    func setISO(_ v: UInt32?) {
-        isoCode = v
-        if !syncing, let v = v, let cam = source as? CameraSource { cam.request(PTP.dpcISOSpeed, v) }
-    }
-
-    func setShutter(_ v: UInt32?) {
-        shutterCode = v
-        if !syncing, let v = v, let cam = source as? CameraSource { cam.request(PTP.dpcShutterSpeed, v) }
-    }
-
-    func snapshot() {
-        guard let f = engine?.currentFrame(), let img = f.cgImage() else { return }
-        let rep = NSBitmapImageRep(cgImage: img)
-        guard let png = rep.representation(using: .png, properties: [:]) else { return }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyyMMdd_HHmmss"
-        let dir = FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask)[0]
-        let url = dir.appendingPathComponent("DSLRWebcam_\(fmt.string(from: Date())).png")
-        if (try? png.write(to: url)) != nil { stateText = "Saved \(url.path)" }
-    }
-
-    func installVirtualCamera() {
-        if let why = VirtualCameraInstaller.unavailableReason {
-            let alert = NSAlert()
-            alert.messageText = "Virtual camera"
-            alert.informativeText = why
-            alert.runModal()
-            return
-        }
-        stateText = "Installing the virtual camera..."
-        installer.install { [weak self] msg in self?.stateText = msg }
-    }
-
-    func diagnostics() {
-        stop()
-        diagnosing = true
-        stateText = "Running diagnostics (about 10 seconds)..."
-        DispatchQueue.global().async {
-            let report = Diagnostics.run()
-            let url = Diagnostics.save(report)
-            DispatchQueue.main.async {
-                self.diagnosing = false
-                self.stateText = "Diagnostics saved to \(url.path)"
-                let alert = NSAlert()
-                alert.messageText = "Diagnostics"
-                alert.informativeText = report
-                alert.addButton(withTitle: "Copy to clipboard")
-                alert.addButton(withTitle: "Close")
-                if alert.runModal() == .alertFirstButtonReturn {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(report, forType: .string)
-                }
-            }
-        }
-    }
-
-    private func tick() {
-        guard let src = source, let e = engine else {
-            stateText = ["Saved", "Diagnostics", "Running", "Virtual", "Could not", "Approve", "Installing", "Move"].contains { stateText.hasPrefix($0) }
-            ? stateText : "Stopped"
-            statsText = "Output \(settings.width)x\(settings.height) @ \(settings.fps) fps"
-            exposureText = ""
-            isoEnabled = false; shutterEnabled = false
-            return
-        }
-        let ex = (src as? CameraSource)?.exposure
-        let isoOK = ex.map { CameraValues.isoSettable($0.mode) } ?? false
-        var state = (src.model.isEmpty ? "" : src.model + ": ") + src.state
-        if ex != nil && !isoOK { state += "  (turn the mode dial to M to set ISO/shutter)" }
-        if !["Saved", "Virtual", "Could not", "Approve", "Installing"].contains(where: { stateText.hasPrefix($0) }) || src.state != "Live" {
-            stateText = state
-        }
-        if let ex = ex {
-            exposureText = "\(CameraValues.name(CameraValues.modes, ex.mode))  |  ISO \(CameraValues.name(CameraValues.iso, ex.iso))  |  "
-                + "\(CameraValues.name(CameraValues.shutter, ex.shutter))  |  \(CameraValues.name(CameraValues.aperture, ex.aperture))"
-            syncing = true
-            isoCode = ex.iso; shutterCode = ex.shutter
-            syncing = false
-        } else {
-            exposureText = ""
-        }
-        isoEnabled = isoOK
-        shutterEnabled = ex.map { CameraValues.shutterSettable($0.mode) } ?? false
-        statsText = String(format: "Output %dx%d @ %d fps target, %.1f actual  |  camera %.1f fps  |  repeated %d  dropped %d",
-                           settings.width, settings.height, settings.fps, e.meter.current(), src.meter.current(), e.repeated, e.dropped)
-            + (vcam.connected ? "  |  virtual camera on" : "")
-        if preview.isEmpty { preview.show(nil, message: src.state) }
-    }
-}
-
-// Layer-backed preview: the output frame scaled to fit, black around it.
+// Layer-backed view showing the output frame scaled to fit (the engine draws CGImages into it
+// directly, without going through SwiftUI for every frame).
 final class PreviewNSView: NSView {
-    private let label = NSTextField(labelWithString: "")
     private(set) var isEmpty = true
 
     override init(frame: NSRect) {
@@ -177,21 +15,15 @@ final class PreviewNSView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         layer?.contentsGravity = .resizeAspect
-        label.textColor = .gray
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
-        NSLayoutConstraint.activate([label.centerXAnchor.constraint(equalTo: centerXAnchor),
-                                     label.centerYAnchor.constraint(equalTo: centerYAnchor),
-                                     label.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -40)])
+        layer?.cornerRadius = 10
+        layer?.masksToBounds = true
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func show(_ image: CGImage?, message: String?) {
+    func show(_ image: CGImage?) {
         layer?.contents = image
         isEmpty = image == nil
-        label.stringValue = image == nil ? (message ?? "") : ""
     }
 }
 
@@ -201,7 +33,180 @@ struct PreviewView: NSViewRepresentable {
     func updateNSView(_ nsView: PreviewNSView, context: Context) {}
 }
 
-struct ContentView: View {
+struct PreviewPane: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ZStack {
+            PreviewView(view: model.preview)
+            if !model.hasPicture { placeholder }
+        }
+        .overlay(alignment: .topLeading) { StatusBadge(model: model).padding(12) }
+        .overlay(alignment: .topTrailing) {
+            if model.running {
+                Chip(text: "\(model.settings.width)×\(model.settings.height) · \(model.settings.fps) fps").padding(12)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 8) {
+                if let n = model.notice { NoticeBanner(text: n) }
+                if model.running && model.hasPicture { StatsBar(stats: model.stats, vcam: model.vcamConnected) }
+            }
+            .padding(12)
+            .animation(.easeOut(duration: 0.2), value: model.notice)
+        }
+        .padding(12)
+    }
+
+    private var placeholder: some View {
+        VStack(spacing: 14) {
+            Image(systemName: model.running ? "camera.aperture" : "video.slash")
+                .font(.system(size: 44, weight: .light))
+                .foregroundColor(.white.opacity(0.45))
+            Text(model.running ? model.phase.title + "…" : "Camera stopped")
+                .font(.title3.weight(.semibold))
+                .foregroundColor(.white.opacity(0.85))
+            if !model.detail.isEmpty {
+                Text(model.detail)
+                    .font(.callout)
+                    .foregroundColor(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
+            if !model.running {
+                Button(action: model.start) { Label("Start", systemImage: "play.fill").frame(minWidth: 90) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(model.diagnosing)
+            } else if model.isCamera && model.canonServiceRunning && model.phase != .live {
+                Button("Pause Canon Webcam Service", action: model.pauseCanonService)
+                    .controlSize(.large)
+            }
+        }
+        .padding(24)
+    }
+}
+
+struct StatusBadge: View {
+    @ObservedObject var model: AppModel
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(model.phase.color)
+                .frame(width: 8, height: 8)
+                .opacity(model.phase == .live && pulse ? 0.35 : 1)
+                .animation(model.phase == .live ? .easeInOut(duration: 0.9).repeatForever() : .default, value: pulse)
+            Text(model.phase.title.uppercased())
+                .font(.caption.weight(.bold))
+                .tracking(0.6)
+            if !model.model.isEmpty {
+                Text(model.model).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
+        .environment(\.colorScheme, .dark)
+        .onAppear { pulse = true }
+    }
+}
+
+struct Chip: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.caption.monospacedDigit())
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(.ultraThinMaterial, in: Capsule())
+            .environment(\.colorScheme, .dark)
+    }
+}
+
+struct StatsBar: View {
+    let stats: OutputStats
+    let vcam: Bool
+
+    var body: some View {
+        HStack(spacing: 14) {
+            stat("Output", String(format: "%.1f fps", stats.outFps))
+            stat("Camera", String(format: "%.1f fps", stats.cameraFps))
+            stat("Repeated", "\(stats.repeated)")
+            stat("Dropped", "\(stats.dropped)")
+            if vcam { Label("Virtual camera", systemImage: "video.fill").font(.caption).foregroundColor(.green) }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(.ultraThinMaterial, in: Capsule())
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func stat(_ name: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(name).foregroundColor(.secondary)
+            Text(value).monospacedDigit()
+        }
+        .font(.caption)
+    }
+}
+
+struct NoticeBanner: View {
+    let text: String
+    var body: some View {
+        Label(text, systemImage: "info.circle.fill")
+            .font(.callout)
+            .lineLimit(2)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+// ---- inspector --------------------------------------------------------------------------------
+
+struct InspectorSection<Content: View>: View {
+    let title: String
+    let symbol: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: symbol)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 12) { content }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.primary.opacity(0.08)))
+        }
+    }
+}
+
+// A labeled control row: caption on top, control below (fits the narrow inspector).
+struct Field<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption).foregroundColor(.secondary)
+            content
+        }
+    }
+}
+
+struct ExposureTile: View {
+    let name: String
+    let value: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(name.uppercased()).font(.system(size: 9, weight: .semibold)).tracking(0.5).foregroundColor(.secondary)
+            Text(value).font(.system(.callout, design: .rounded).weight(.medium)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct Inspector: View {
     @ObservedObject var model: AppModel
 
     private func binding<T>(_ kp: WritableKeyPath<StreamSettings, T>) -> Binding<T> {
@@ -216,76 +221,188 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    Button(model.running ? "Stop" : "Start") { model.running ? model.stop() : model.start() }
-                        .keyboardShortcut(.space, modifiers: [])
-                        .disabled(model.diagnosing)
-                    Button("Snapshot") { model.snapshot() }.disabled(!model.running)
-                    Button("Diagnostics") { model.diagnostics() }.disabled(model.running || model.diagnosing)
-                    Button("Install virtual camera") { model.installVirtualCamera() }
-                    if AppInfo.donateConfigured, let url = URL(string: AppInfo.donateURL) {
-                        Link("\u{2615} Buy me a coffee", destination: url)
-                    }
-                    Spacer()
-                    Picker("Source", selection: $model.useTestPattern) {
-                        Text("Canon EOS (USB)").tag(false)
-                        Text("Test pattern").tag(true)
-                    }.frame(width: 230)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                camera
+                // Only when it matters: the camera isn't streaming and Canon's service may be the reason.
+                if model.isCamera && model.canonServiceRunning && model.phase != .live { canonWarning }
+                output
+                image
+                virtualCamera
+            }
+            .padding(16)
+        }
+        .frame(width: 300)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var camera: some View {
+        InspectorSection(title: "Camera", symbol: "camera") {
+            Picker("Source", selection: $model.useTestPattern) {
+                Text("Canon EOS").tag(false)
+                Text("Test Pattern").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if let ex = model.exposure {
+                HStack(spacing: 8) {
+                    ExposureTile(name: "Mode", value: CameraValues.shortName(CameraValues.modes, ex.mode))
+                    ExposureTile(name: "ISO", value: CameraValues.name(CameraValues.iso, ex.iso))
                 }
-                HStack(spacing: 12) {
-                    Picker("Streaming Video Output Resolution", selection: resolution) {
-                        ForEach(StreamSettings.resolutions, id: \.self) { r in
-                            let (w, h) = StreamSettings.resolutionToSize(r)
-                            Text("\(w) x \(h)  (\(r)p)").tag(r)
-                        }
-                    }.frame(width: 390)
-                    Picker("Target Streaming Framerate", selection: binding(\.fps)) {
-                        ForEach(StreamSettings.fpsChoices, id: \.self) { Text("\($0) fps").tag($0) }
-                    }.frame(width: 280)
-                    Picker("Aspect", selection: binding(\.fill)) {
-                        Text("Fit (black side bars)").tag(false)
-                        Text("Fill (crop to 16:9)").tag(true)
-                    }.frame(width: 240)
+                HStack(spacing: 8) {
+                    ExposureTile(name: "Shutter", value: CameraValues.name(CameraValues.shutter, ex.shutter))
+                    ExposureTile(name: "Aperture", value: CameraValues.name(CameraValues.aperture, ex.aperture))
                 }
-                HStack(spacing: 12) {
-                    Toggle("Mirror left/right", isOn: binding(\.flipH))
-                    Toggle("Flip upside-down", isOn: binding(\.flipV))
-                    Picker("Noise reduction", selection: binding(\.noise)) {
-                        ForEach(0..<4, id: \.self) { Text(StreamSettings.levels[$0]).tag($0) }
-                    }.frame(width: 210)
-                    Picker("Sharpness", selection: binding(\.sharp)) {
-                        ForEach(0..<4, id: \.self) { Text(StreamSettings.levels[$0]).tag($0) }
-                    }.frame(width: 180)
-                    Picker("Camera ISO", selection: Binding(get: { model.isoCode }, set: { model.setISO($0) })) {
-                        Text("-").tag(UInt32?.none)
+                Divider()
+            }
+
+            HStack(spacing: 10) {
+                Field(title: "ISO") {
+                    Picker("ISO", selection: Binding(get: { model.isoCode }, set: { model.setISO($0) })) {
+                        Text("–").tag(UInt32?.none)
                         ForEach(CameraValues.choices(CameraValues.isoChoices, CameraValues.iso, model.isoCode), id: \.0) { c in
                             Text(c.1).tag(UInt32?.some(c.0))
                         }
-                    }.frame(width: 170).disabled(!model.isoEnabled)
+                    }
+                    .labelsHidden()
+                    .disabled(!model.isoEnabled)
+                }
+                Field(title: "Shutter") {
                     Picker("Shutter", selection: Binding(get: { model.shutterCode }, set: { model.setShutter($0) })) {
-                        Text("-").tag(UInt32?.none)
+                        Text("–").tag(UInt32?.none)
                         ForEach(CameraValues.choices(CameraValues.shutterChoices, CameraValues.shutter, model.shutterCode), id: \.0) { c in
                             Text(c.1).tag(UInt32?.some(c.0))
                         }
-                    }.frame(width: 150).disabled(!model.shutterEnabled)
+                    }
+                    .labelsHidden()
+                    .disabled(!model.shutterEnabled)
                 }
             }
-            .padding(10)
-
-            PreviewView(view: model.preview).frame(minWidth: 640, minHeight: 360)
-
-            HStack {
-                Text(model.stateText).lineLimit(1).truncationMode(.tail)
-                Spacer()
-                Text(model.exposureText)
-                Text(model.statsText)
+            if model.exposure != nil && !model.shutterEnabled {
+                Label("Turn the mode dial to M to set ISO and shutter here.", systemImage: "dial.medium")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .font(.system(size: 11))
-            .padding(.horizontal, 10).padding(.vertical, 5)
         }
-        .frame(minWidth: 1100, minHeight: 640)
+    }
+
+    private var canonWarning: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Canon's webcam service is running", systemImage: "exclamationmark.triangle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundColor(.orange)
+            Text("EOS Webcam Utility's background service can take over the camera. Pause it while you use DSLR Webcam Studio; it comes back when you quit.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Pause Canon Service", action: model.pauseCanonService)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var output: some View {
+        InspectorSection(title: "Output", symbol: "rectangle.on.rectangle") {
+            Field(title: "Resolution") {
+                Picker("Resolution", selection: resolution) {
+                    ForEach(StreamSettings.resolutions, id: \.self) { Text(verbatim: "\($0)p").tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            Field(title: "Frame rate") {
+                Picker("Frame rate", selection: binding(\.fps)) {
+                    ForEach(StreamSettings.fpsChoices, id: \.self) { Text(verbatim: "\($0)").tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            Field(title: "Aspect") {
+                Picker("Aspect", selection: binding(\.fill)) {
+                    Text("Fit").tag(false)
+                    Text("Fill 16:9").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            Text(model.settings.fill ? "Crops the camera's 3:2 picture to fill the frame." : "Shows the whole picture with black side bars.")
+                .font(.caption).foregroundColor(.secondary)
+        }
+    }
+
+    private var image: some View {
+        InspectorSection(title: "Image", symbol: "wand.and.stars") {
+            Toggle("Mirror left/right", isOn: binding(\.flipH))
+            Toggle("Flip upside down", isOn: binding(\.flipV))
+            Field(title: "Noise reduction") {
+                Picker("Noise reduction", selection: binding(\.noise)) {
+                    ForEach(0..<4, id: \.self) { Text(StreamSettings.levels[$0]).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+            Field(title: "Sharpness") {
+                Picker("Sharpness", selection: binding(\.sharp)) {
+                    ForEach(0..<4, id: \.self) { Text(StreamSettings.levels[$0]).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+        }
+    }
+
+    private var virtualCamera: some View {
+        InspectorSection(title: "Virtual Camera", symbol: "video.badge.checkmark") {
+            HStack(spacing: 8) {
+                Circle().fill(model.vcamConnected ? Color.green : Color.secondary.opacity(0.5)).frame(width: 8, height: 8)
+                Text(model.vcamConnected ? "Sending to \"\(VCamName.name)\"" : "Not connected")
+                    .font(.callout)
+            }
+            Text("Video apps (Zoom, Teams, Meet, OBS, FaceTime) see this app's picture as the camera \"\(VCamName.name)\".")
+                .font(.caption).foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Install Virtual Camera…", action: model.installVirtualCamera)
+        }
+    }
+}
+
+// The virtual camera's name, without importing VCamShared into every view.
+enum VCamName { static let name = "DSLR Webcam Studio" }
+
+// ---- window -----------------------------------------------------------------------------------
+
+struct ContentView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            PreviewPane(model: model)
+                .frame(minWidth: 560, minHeight: 380)
+                .background(Color(nsColor: .underPageBackgroundColor))
+            Divider()
+            Inspector(model: model)
+        }
+        .frame(minWidth: 880, minHeight: 560)
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button(action: model.toggle) {
+                    Label(model.running ? "Stop" : "Start", systemImage: model.running ? "stop.fill" : "play.fill")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help(model.running ? "Stop the camera (⌘.)" : "Start the camera (⌘R)")
+                .disabled(model.diagnosing)
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(action: model.snapshot) { Label("Snapshot", systemImage: "camera") }
+                    .help("Save the current picture to Pictures (⌘S)")
+                    .disabled(!model.hasPicture)
+                Button(action: model.diagnostics) { Label("Diagnostics", systemImage: "stethoscope") }
+                    .help("Test the camera connection and save a report")
+                    .disabled(model.running || model.diagnosing)
+                if AppInfo.donateConfigured, let url = URL(string: AppInfo.donateURL) {
+                    Link(destination: url) { Label("Buy me a coffee", systemImage: "cup.and.saucer") }
+                        .help("Buy me a coffee")
+                }
+            }
+        }
         .onAppear { model.start() }
         .onDisappear { model.stop() }
     }
@@ -296,14 +413,35 @@ struct DSLRWebcamStudioApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
 
     var body: some Scene {
-        WindowGroup("DSLR Webcam Studio \(AppInfo.version)") {
+        WindowGroup("DSLR Webcam Studio") {
             ContentView(model: model)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    model.stop() // returns the camera's live view to normal
+                    model.quit()
                 }
         }
-        // One window only: the preview view and the camera can't be shared between windows.
-        .commands { CommandGroup(replacing: .newItem) {} }
+        .windowToolbarStyle(.unified)
+        .commands {
+            // One window only: the preview view and the camera can't be shared between windows.
+            CommandGroup(replacing: .newItem) {}
+            CommandMenu("Camera") {
+                Button(model.running ? "Stop" : "Start") { model.toggle() }
+                    .keyboardShortcut(model.running ? "." : "r", modifiers: .command)
+                    .disabled(model.diagnosing)
+                Button("Take Snapshot") { model.snapshot() }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(!model.hasPicture)
+                Button("Show Snapshots in Finder") { model.revealSnapshots() }
+                Divider()
+                Toggle("Mirror Left/Right", isOn: Binding(get: { model.settings.flipH }, set: { model.settings.flipH = $0 }))
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
+                Divider()
+                Button("Run Diagnostics") { model.diagnostics() }.disabled(model.running || model.diagnosing)
+                Button("Install Virtual Camera…") { model.installVirtualCamera() }
+                Divider()
+                Button("Pause Canon Webcam Service") { model.pauseCanonService() }.disabled(!model.canonServiceRunning)
+                Button("Resume Canon Webcam Service") { model.resumeCanonService() }.disabled(model.canonServiceRunning)
+            }
+        }
     }
 }
 

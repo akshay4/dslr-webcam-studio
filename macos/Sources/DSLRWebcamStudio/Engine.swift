@@ -227,6 +227,7 @@ final class CameraSource: LiveSource {
                 setStatus(model: cam.model, state: "Live")
                 updateExposure(cam)
                 var lastExposure = monoNow()
+                var watchdog = PTP.Watchdog(now: monoNow())
                 while !stopping {
                     reqLock.lock(); let pending = requests; requests = []; reqLock.unlock()
                     for (p, v) in pending {
@@ -234,11 +235,24 @@ final class CameraSource: LiveSource {
                         setStatus(state: rc == PTP.rcOK ? "Live" : "Camera refused the change (\(PTP.rcName(rc))). Set the mode dial to M.")
                     }
                     if !pending.isEmpty || monoNow() - lastExposure > 0.5 { updateExposure(cam); lastExposure = monoNow() }
+                    switch watchdog.check(now: monoNow(), evfOutput: cam.evfOutput) {
+                    case .none: break
+                    case .restartEvf:
+                        setStatus(state: "Waiting for live view from the camera...")
+                        try cam.restartLiveView()
+                    case .reconnect:
+                        throw CameraError("No live view picture from the camera. Enable Live View shooting in the camera menu"
+                            + " and close the camera's own Live View.")
+                    }
                     guard let jpeg = try cam.readJPEG() else { Thread.sleep(forTimeInterval: 0.005); continue }
-                    if let f = Frame.decodeJPEG(jpeg) { publish(f) }
+                    if let f = Frame.decodeJPEG(jpeg) {
+                        if state != "Live" && state.hasPrefix("Waiting") { setStatus(state: "Live") }
+                        watchdog.frame(monoNow())
+                        publish(f)
+                    }
                 }
             } catch {
-                setStatus(state: "Camera: \(error.localizedDescription) Retrying...")
+                setStatus(state: "Camera: \(error.localizedDescription)\(CanonSoftware.hint) Retrying...")
             }
             nap(2)
         }

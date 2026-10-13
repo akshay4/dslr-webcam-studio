@@ -10,6 +10,7 @@ const char *ptp_rc_name(uint16_t rc, char tmp[16])
     case 0x2002: return "GeneralError";
     case 0x2003: return "SessionNotOpen";
     case 0x2005: return "OperationNotSupported";
+    case 0x2006: return "ParameterNotSupported";
     case 0x2019: return "DeviceBusy";
     case 0x201D: return "InvalidParameter";
     case 0x201E: return "SessionAlreadyOpen";
@@ -64,16 +65,35 @@ bool ptp_props_get(const ptp_props *p, uint32_t code, uint32_t *value)
     return false;
 }
 
-void ptp_parse_events(const uint8_t *d, size_t n, ptp_props *props)
+bool ptp_parse_events(const uint8_t *d, size_t n, ptp_props *props)
 {
-    if (!d) return;
+    if (!d) return false;
     size_t pos = 0;
+    bool shutdown_soon = false;
     while (pos + 8 <= n) {
         uint32_t size = rd32(d + pos), type = rd32(d + pos + 4);
         if (size < 8 || pos + size > n || type == 0) break;
-        if (type == 0xC189 && size >= 16) ptp_props_set(props, rd32(d + pos + 8), rd32(d + pos + 12));
+        if (type == PTP_EC_EOS_PropValueChanged && size >= 16) ptp_props_set(props, rd32(d + pos + 8), rd32(d + pos + 12));
+        if (type == PTP_EC_EOS_WillSoonShutdown) shutdown_soon = true;
         pos += size;
     }
+    return shutdown_soon;
+}
+
+void watchdog_init(lv_watchdog *w, double now) { w->last_frame = now; w->last_restart = -1e300; w->restarts = 0; }
+
+void watchdog_frame(lv_watchdog *w, double now) { w->last_frame = now; }
+
+watchdog_action watchdog_check(lv_watchdog *w, double now, int64_t evf_output)
+{
+    if (now - w->last_frame >= WATCHDOG_RECONNECT_AFTER) return WATCHDOG_RECONNECT;
+    bool lost_pc = evf_output >= 0 && ((uint32_t)evf_output & EVF_TO_PC_MASK) == 0;
+    bool stalled = now - w->last_frame >= WATCHDOG_RESTART_AFTER;
+    if (!lost_pc && !stalled) return WATCHDOG_NONE;
+    if (now - w->last_restart < (lost_pc ? WATCHDOG_MIN_GAP : WATCHDOG_RESTART_AFTER)) return WATCHDOG_NONE;
+    w->last_restart = now;
+    w->restarts++;
+    return WATCHDOG_RESTART_EVF;
 }
 
 // PTP string: u8 character count (including the terminating NUL), then UTF-16LE.

@@ -3,6 +3,48 @@
 All notable changes to DSLR Webcam Studio. Versions follow [Semantic Versioning](https://semver.org/);
 the current version is in [`VERSION`](VERSION).
 
+## [2.0.0] - 2026-10-13
+
+A redesigned app on Windows and macOS, and camera handling reworked on all platforms to match what Canon's own
+EOS Webcam Utility does. **Tested end to end on macOS with a Canon EOS 700D** (live view at ~17 fps, 30 fps output).
+
+### New window (Windows and macOS)
+- The live preview fills the window, with a LIVE / Connecting badge and the camera model, the output format and a
+  compact statistics bar drawn over the picture, and short notices (snapshot saved, virtual camera installed...)
+  instead of a crowded status bar.
+- Settings moved to an inspector on the right, in cards: **Camera** (source, mode / ISO / shutter / aperture readout,
+  ISO and shutter pickers), **Output** (resolution, frame rate, fit or fill), **Image** (mirror, flip, noise
+  reduction, sharpness) and **Virtual Camera** (status and install).
+- Segmented buttons instead of drop-down lists, switches for mirror and flip, and a Start button in the middle of
+  the preview when the camera is stopped.
+- Keyboard: Ctrl/⌘+R start or stop, Ctrl/⌘+S snapshot (also F5 on Windows); macOS has a **Camera** menu.
+- macOS: native SwiftUI layout with SF Symbols and materials. Windows: dark title bar on Windows 10/11, custom
+  rounded controls, scaled for high-DPI screens.
+
+### Camera handling
+Camera session handling reworked on **Windows, macOS and Linux** to match what Canon's own EOS Webcam Utility does
+(its EDSDK camera layer was studied for this; the apps still use no Canon code or DLLs).
+
+#### All platforms
+- Live view restarts by itself when the camera turns it off (Live View button, mode dial, menu): the app
+  watches the camera's live view output and turns it back on, and reconnects if no picture arrives for 12 seconds.
+- The camera no longer powers off mid-call: the app answers the camera's "will soon shut down" warning with
+  KeepDeviceOn (0x911D) and also sends it every minute.
+- Connecting is more reliable: remote mode, event mode and live view output are retried while the camera
+  reports "busy" (up to 10 times), the same as Canon's SDK.
+- Cameras that reject the usual GetViewFinderData parameter are retried with the parameters Canon's SDK uses.
+- Windows and macOS: camera errors now say when Canon software (EOS Utility, EOS Webcam Utility and its services)
+  is running and may be holding the camera.
+
+#### macOS
+- New **Camera > Pause Canon webcam service** menu: EOS Webcam Utility's background service opens every Canon
+  camera it sees and fights over live view. The app can pause it and restores it when you quit (also
+  `--pause-canon-service` / `--resume-canon-service`).
+- ImageCaptureCore no longer reads thumbnails and metadata of every photo on the card while streaming, and the
+  app waits for the camera to report ready before sending commands. Devices that macOS doesn't allow to be
+  controlled (e.g. in mass-storage mode) get a clear message.
+- Virtual camera: each frame is scaled once, not on every output tick, when a video app picks another size.
+
 ## [1.1.0] - 2026-10-10
 
 **First macOS preview** (macOS 12+, Apple silicon and Intel). It hasn't been tested with a camera yet, so please

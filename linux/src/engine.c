@@ -269,16 +269,34 @@ static void camera_loop(source_t *s)
             set_state(s, camera_model(c), "Live");
             update_exposure(s, c);
             double last_exp = mono_now();
+            lv_watchdog wd;
+            watchdog_init(&wd, mono_now());
+            bool waiting = false;
             while (!g_atomic_int_get(&s->stopping)) {
                 apply_requests(s, c);
                 if (mono_now() - last_exp > 0.5) { update_exposure(s, c); last_exp = mono_now(); }
+                watchdog_action a = watchdog_check(&wd, mono_now(), camera_evf_output(c));
+                if (a == WATCHDOG_RECONNECT) {
+                    snprintf(err, sizeof err, "No live view picture from the camera. Enable Live View shooting in the camera menu "
+                                              "and close the camera's own Live View.");
+                    break;
+                }
+                if (a == WATCHDOG_RESTART_EVF) {
+                    set_state(s, NULL, "Waiting for live view from the camera...");
+                    waiting = true;
+                    if (camera_restart_live_view(c) != 0) { snprintf(err, sizeof err, "Could not restart live view."); break; }
+                }
                 uint8_t *jpeg;
                 size_t len;
                 int r = camera_read_jpeg(c, &jpeg, &len, err, sizeof err);
                 if (r < 0) break;
                 if (r == 0) { g_usleep(5000); continue; }
                 frame_t f;
-                if (decode_jpeg(jpeg, len, &f)) publish(s, &f);
+                if (decode_jpeg(jpeg, len, &f)) {
+                    if (waiting) { set_state(s, NULL, "Live"); waiting = false; }
+                    watchdog_frame(&wd, mono_now());
+                    publish(s, &f);
+                }
                 free(jpeg);
             }
             camera_close(c);

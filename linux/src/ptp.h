@@ -12,12 +12,15 @@ enum {
     PTP_OC_EOS_SetRemoteMode = 0x9114,
     PTP_OC_EOS_SetEventMode = 0x9115,
     PTP_OC_EOS_GetEvent = 0x9116,
+    PTP_OC_EOS_KeepDeviceOn = 0x911D,
     PTP_OC_EOS_GetViewFinderData = 0x9153,
 };
 
 enum {
     PTP_RC_OK = 0x2001,
+    PTP_RC_ParameterNotSupported = 0x2006,
     PTP_RC_DeviceBusy = 0x2019,
+    PTP_RC_InvalidParameter = 0x201D,
     PTP_RC_SessionAlreadyOpen = 0x201E,
     PTP_RC_CANON_NotReady = 0xA102,
 };
@@ -32,6 +35,28 @@ enum {
 };
 
 enum { EVF_OUTPUT_OFF = 0, EVF_OUTPUT_TFT = 1, EVF_OUTPUT_PC = 2 };
+// Output device bits that send live view to the computer (PC, and PC small on newer bodies).
+enum { EVF_TO_PC_MASK = 0x0A };
+
+// GetEvent record types: a property changed, and the camera is about to auto power off.
+enum { PTP_EC_EOS_PropValueChanged = 0xC189, PTP_EC_EOS_WillSoonShutdown = 0xC18D };
+
+// Canon's EDSDK retries remote/event mode while the camera answers DeviceBusy (10 tries).
+enum { PTP_BUSY_RETRIES = 10, PTP_BUSY_RETRY_US = 100000 };
+#define PTP_KEEPALIVE_S 60.0
+
+// Keeps live view running the way Canon's own webcam service does (same logic as the Windows and
+// macOS apps): when the camera switches live view away from the computer, turn it back on; when
+// frames stop arriving, re-assert the output device, and reconnect if that doesn't help.
+typedef enum { WATCHDOG_NONE, WATCHDOG_RESTART_EVF, WATCHDOG_RECONNECT } watchdog_action;
+#define WATCHDOG_RESTART_AFTER 3.0
+#define WATCHDOG_RECONNECT_AFTER 12.0
+#define WATCHDOG_MIN_GAP 1.0
+typedef struct { double last_frame, last_restart; int restarts; } lv_watchdog;
+void watchdog_init(lv_watchdog *w, double now);
+void watchdog_frame(lv_watchdog *w, double now);
+// evf_output < 0: not known yet.
+watchdog_action watchdog_check(lv_watchdog *w, double now, int64_t evf_output);
 
 typedef struct {
     uint16_t code;
@@ -58,7 +83,8 @@ const char *ptp_rc_name(uint16_t rc, char tmp[16]);
 bool ptp_extract_jpeg(const uint8_t *d, size_t n, size_t *off, size_t *len);
 
 // Canon event data: [u32 size][u32 type][payload] records; 0xC189 = property changed [u32 prop][u32 value].
-void ptp_parse_events(const uint8_t *d, size_t n, ptp_props *props);
+// Returns true if the camera warned it will soon power off (answer with KeepDeviceOn).
+bool ptp_parse_events(const uint8_t *d, size_t n, ptp_props *props);
 void ptp_props_set(ptp_props *p, uint32_t code, uint32_t value);
 bool ptp_props_get(const ptp_props *p, uint32_t code, uint32_t *value);
 
